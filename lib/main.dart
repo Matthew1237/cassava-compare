@@ -30,6 +30,7 @@
 //   services.dart        Open Food Facts lookup, ReviewProvider, ReviewAnalyzer
 //   compare_screen.dart  compare screen and its nutrition/review widgets
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'compare_screen.dart';
@@ -51,20 +52,72 @@ class NutriCompareApp extends StatelessWidget {
     return MaterialApp(
       title: 'NutriCompare',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorSchemeSeed: const Color(0xFF2E7D6B),
-        cardTheme: CardThemeData(
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-            side: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
-          ),
-        ),
-      ),
+      theme: _theme(Brightness.light),
+      darkTheme: _theme(Brightness.dark),
       home: const HomeScreen(),
     );
   }
+}
+
+/// Shelf-tag yellow: the one loud colour, reserved for the scan action.
+const shelfTag = Color(0xFFF5C84B);
+const _spruce = Color(0xFF17302A);
+
+ThemeData _theme(Brightness b) {
+  final light = b == Brightness.light;
+  final cs = ColorScheme.fromSeed(
+    seedColor: const Color(0xFF2E7D6B),
+    brightness: b,
+  ).copyWith(
+    surface: light ? const Color(0xFFF7F8F6) : null,
+    onSurface: light ? _spruce : null,
+  );
+  final base = ThemeData(useMaterial3: true, colorScheme: cs);
+  final t = base.textTheme;
+  return base.copyWith(
+    scaffoldBackgroundColor: cs.surface,
+    textTheme: t.copyWith(
+      headlineSmall: t.headlineSmall?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.6),
+      titleLarge: t.titleLarge?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.4),
+      titleMedium: t.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+    ),
+    appBarTheme: AppBarTheme(
+      backgroundColor: cs.surface,
+      surfaceTintColor: Colors.transparent,
+      centerTitle: false,
+      titleTextStyle: t.titleLarge?.copyWith(
+          fontWeight: FontWeight.w800, letterSpacing: -0.4, color: cs.onSurface),
+    ),
+    cardTheme: CardThemeData(
+      elevation: 0,
+      color: cs.surfaceContainerLowest,
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.6)),
+      ),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        minimumSize: const Size(0, 52),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size(0, 52),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        side: BorderSide(color: cs.outlineVariant),
+        textStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+      ),
+    ),
+    chipTheme: base.chipTheme.copyWith(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      side: BorderSide(color: cs.outlineVariant),
+    ),
+    snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,13 +142,21 @@ class _ScannerScreenState extends State<ScannerScreen> {
     detectionSpeed: DetectionSpeed.noDuplicates,
   );
   bool _done = false;
+  bool _found = false;
+
+  static const _window = Size(290, 170);
 
   void _onDetect(BarcodeCapture capture) {
     if (_done) return;
     final code = capture.barcodes.map((b) => b.rawValue).whereType<String>().firstOrNull;
     if (code == null || code.isEmpty) return;
     _done = true;
-    Navigator.of(context).pop(code);
+    HapticFeedback.mediumImpact();
+    // Flash the frame green briefly so the read is visible, then return.
+    setState(() => _found = true);
+    Future.delayed(const Duration(milliseconds: 250), () {
+      if (mounted) Navigator.of(context).pop(code);
+    });
   }
 
   @override
@@ -106,43 +167,192 @@ class _ScannerScreenState extends State<ScannerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final frame = _found ? const Color(0xFF6BD49A) : shelfTag;
     return Scaffold(
       backgroundColor: Colors.black,
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: const Text('Scan a barcode'),
+        backgroundColor: Colors.transparent,
+        foregroundColor: Colors.white,
+        title: const Text('Scan a barcode', style: TextStyle(color: Colors.white)),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.flash_on),
-            tooltip: 'Toggle torch',
-            onPressed: () => _controller.toggleTorch(),
+          ValueListenableBuilder(
+            valueListenable: _controller,
+            builder: (_, state, _) {
+              final on = state.torchState == TorchState.on;
+              return IconButton(
+                icon: Icon(on ? Icons.flashlight_on : Icons.flashlight_off_outlined),
+                color: on ? shelfTag : Colors.white,
+                tooltip: on ? 'Turn torch off' : 'Turn torch on',
+                onPressed: state.torchState == TorchState.unavailable
+                    ? null
+                    : () => _controller.toggleTorch(),
+              );
+            },
           ),
         ],
       ),
       body: Stack(
         fit: StackFit.expand,
         children: [
-          MobileScanner(controller: _controller, onDetect: _onDetect),
-          Center(
-            child: Container(
-              width: 280,
-              height: 160,
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.white, width: 3),
-                borderRadius: BorderRadius.circular(16),
-              ),
-            ),
+          MobileScanner(
+            controller: _controller,
+            onDetect: _onDetect,
+            errorBuilder: (context, error) => _CameraError(error),
           ),
-          const Positioned(
-            left: 0,
-            right: 0,
-            bottom: 48,
-            child: Text(
-              'Line up the barcode inside the frame',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+          CustomPaint(painter: _ViewfinderPainter(_window, frame)),
+          if (!_found) const Center(child: _ScanLine(width: 250, travel: 150)),
+          Positioned(
+            left: 24,
+            right: 24,
+            bottom: 56,
+            child: Column(
+              children: [
+                Text(
+                  _found ? 'Got it' : 'Fit the barcode inside the frame',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Hold steady about a hand\'s width away',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white70),
+                ),
+              ],
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Dims the camera everywhere except a rounded window with corner brackets.
+class _ViewfinderPainter extends CustomPainter {
+  final Size window;
+  final Color color;
+  const _ViewfinderPainter(this.window, this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = Rect.fromCenter(
+        center: size.center(Offset.zero), width: window.width, height: window.height);
+    final rr = RRect.fromRectAndRadius(r, const Radius.circular(18));
+    canvas.drawPath(
+      Path.combine(PathOperation.difference, Path()..addRect(Offset.zero & size),
+          Path()..addRRect(rr)),
+      Paint()..color = Colors.black.withValues(alpha: 0.55),
+    );
+    final p = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round;
+    const l = 30.0;
+    for (final (c, dx, dy) in [
+      (r.topLeft, 1.0, 1.0),
+      (r.topRight, -1.0, 1.0),
+      (r.bottomLeft, 1.0, -1.0),
+      (r.bottomRight, -1.0, -1.0),
+    ]) {
+      canvas.drawPath(
+        Path()
+          ..moveTo(c.dx, c.dy + dy * l)
+          ..lineTo(c.dx, c.dy + dy * 12)
+          ..quadraticBezierTo(c.dx, c.dy, c.dx + dx * 12, c.dy)
+          ..lineTo(c.dx + dx * l, c.dy),
+        p,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ViewfinderPainter old) => old.color != color || old.window != window;
+}
+
+/// A thin line sweeping the window, so the screen reads as "working".
+class _ScanLine extends StatefulWidget {
+  final double width, travel;
+  const _ScanLine({required this.width, required this.travel});
+
+  @override
+  State<_ScanLine> createState() => _ScanLineState();
+}
+
+class _ScanLineState extends State<_ScanLine> with SingleTickerProviderStateMixin {
+  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1600));
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.of(context).disableAnimations) {
+      _c.stop();
+    } else if (!_c.isAnimating) {
+      _c.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (_, child) => Transform.translate(
+        offset: Offset(0, (Curves.easeInOut.transform(_c.value) - 0.5) * widget.travel),
+        child: child,
+      ),
+      child: Container(
+        width: widget.width,
+        height: 2,
+        decoration: BoxDecoration(
+          color: shelfTag.withValues(alpha: 0.9),
+          boxShadow: [BoxShadow(color: shelfTag.withValues(alpha: 0.6), blurRadius: 8)],
+        ),
+      ),
+    );
+  }
+}
+
+class _CameraError extends StatelessWidget {
+  final MobileScannerException error;
+  const _CameraError(this.error);
+
+  @override
+  Widget build(BuildContext context) {
+    final denied = error.errorCode == MobileScannerErrorCode.permissionDenied;
+    return ColoredBox(
+      color: Colors.black,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.no_photography_outlined, color: Colors.white70, size: 48),
+              const SizedBox(height: 12),
+              Text(
+                denied ? 'Camera access is off' : 'The camera could not start',
+                style: const TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.w700, fontSize: 17),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                denied
+                    ? 'Allow camera access in Settings, or go back and type the barcode number.'
+                    : 'Go back and type the barcode number instead.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -237,7 +447,23 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _remove(Product p) => setState(() => _items.remove(p));
+  void _remove(Product p) {
+    final i = _items.indexOf(p);
+    setState(() => _items.removeAt(i));
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text('Removed ${p.name}', maxLines: 1, overflow: TextOverflow.ellipsis),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () {
+            if (mounted && !_items.contains(p)) {
+              setState(() => _items.insert(i.clamp(0, _items.length), p));
+            }
+          },
+        ),
+      ));
+  }
 
   void _openCompare() {
     Navigator.of(context).push(MaterialPageRoute(
@@ -248,133 +474,281 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final canCompare = _items.length >= 2 && !_busy;
+    final tt = Theme.of(context).textTheme;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('NutriCompare', style: TextStyle(fontWeight: FontWeight.w700)),
-        centerTitle: false,
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: canCompare ? _openCompare : null,
-        icon: const Icon(Icons.compare_arrows),
-        label: Text(_items.length >= 2
-            ? 'Compare ${_items.length} products'
-            : 'Scan at least 2 products'),
-        backgroundColor: canCompare ? cs.primary : cs.surfaceContainerHighest,
-        foregroundColor: canCompare ? cs.onPrimary : cs.onSurfaceVariant,
-      ),
+      appBar: AppBar(title: const Text('NutriCompare')),
+      bottomNavigationBar: _items.isEmpty
+          ? null
+          : _CompareBar(products: _items, busy: _busy, onCompare: _openCompare),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
         children: [
-          Text('Compare what you\'re about to buy',
-              style: Theme.of(context)
-                  .textTheme
-                  .headlineSmall
-                  ?.copyWith(fontWeight: FontWeight.w700)),
+          Text('Compare before you buy', style: tt.headlineSmall),
           const SizedBox(height: 6),
           Text(
-            'Scan each product\'s barcode. We look up its nutrition facts and '
-            'show them side by side — you decide.',
-            style: Theme.of(context)
-                .textTheme
-                .bodyMedium
-                ?.copyWith(color: cs.onSurfaceVariant),
+            'Scan two or more products to see their nutrition side by side. '
+            'No scores — you decide.',
+            style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 20),
+          _ScanHero(onTap: _busy ? null : _scan),
+          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
-                child: FilledButton.icon(
-                  onPressed: _busy ? null : _scan,
-                  icon: const Icon(Icons.qr_code_scanner),
-                  label: const Text('Scan barcode'),
+                child: OutlinedButton.icon(
+                  onPressed: _busy ? null : _enterManually,
+                  icon: const Icon(Icons.dialpad),
+                  label: const Text('Type number'),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _busy ? null : _enterManually,
-                  icon: const Icon(Icons.keyboard_outlined),
-                  label: const Text('Type number'),
+                  onPressed: _busy ? null : _byFrontLabel,
+                  icon: const Icon(Icons.photo_camera_outlined),
+                  label: const Text('Front label'),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _busy ? null : _byFrontLabel,
-              icon: const Icon(Icons.photo_camera_outlined),
-              label: const Text('Find by front label'),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 200),
+            child: !_busy
+                ? const SizedBox(width: double.infinity)
+                : Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: Row(
+                      children: [
+                        const SizedBox.square(
+                            dimension: 18, child: CircularProgressIndicator(strokeWidth: 2.5)),
+                        const SizedBox(width: 12),
+                        Text('Looking up product…', style: tt.bodyMedium),
+                      ],
+                    ),
+                  ),
+          ),
+          const SizedBox(height: 28),
+          if (_items.isEmpty)
+            const _EmptyBasket()
+          else ...[
+            Row(
+              children: [
+                Text('Your basket', style: tt.titleMedium),
+                const SizedBox(width: 8),
+                Text('${_items.length}',
+                    style: tt.titleMedium?.copyWith(color: cs.onSurfaceVariant)),
+                const Spacer(),
+                Text('Swipe to remove',
+                    style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Card(
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                children: [
+                  for (final (i, p) in _items.indexed) ...[
+                    if (i > 0) Divider(height: 1, indent: 76, color: cs.outlineVariant),
+                    Dismissible(
+                      key: ValueKey(p.barcode),
+                      direction: DismissDirection.endToStart,
+                      onDismissed: (_) => _remove(p),
+                      background: Container(
+                        color: cs.errorContainer,
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.only(right: 20),
+                        child: Icon(Icons.delete_outline, color: cs.onErrorContainer),
+                      ),
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+                        leading: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            ProductThumb(p, size: 46),
+                            // The product's colour on every chart in the compare screen.
+                            Positioned(
+                              right: -3,
+                              bottom: -3,
+                              child: Container(
+                                width: 14,
+                                height: 14,
+                                decoration: BoxDecoration(
+                                  color: p.color,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: cs.surfaceContainerLowest, width: 2),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        title: Text(p.name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontWeight: FontWeight.w600)),
+                        subtitle: Text(p.category, maxLines: 1, overflow: TextOverflow.ellipsis),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.close),
+                          tooltip: 'Remove ${p.name}',
+                          onPressed: () => _remove(p),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 20),
+          Text(
+            'Nutrition data from Open Food Facts. It is crowd-sourced and may be '
+            'incomplete or out of date.',
+            style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The primary action, styled like a yellow shelf price tag.
+class _ScanHero extends StatelessWidget {
+  final VoidCallback? onTap;
+  const _ScanHero({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: onTap == null ? 0.5 : 1,
+      child: Material(
+        color: shelfTag,
+        borderRadius: BorderRadius.circular(24),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Row(
+              children: [
+                Container(
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    color: _spruce,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: const Icon(Icons.qr_code_scanner, color: shelfTag, size: 30),
+                ),
+                const SizedBox(width: 16),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Scan a barcode',
+                          style: TextStyle(
+                              color: _spruce,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: -0.4)),
+                      SizedBox(height: 2),
+                      Text('Point your camera at the stripes on the pack',
+                          style: TextStyle(color: Color(0xCC17302A))),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
-          if (_busy) ...[
-            const SizedBox(height: 14),
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyBasket extends StatelessWidget {
+  const _EmptyBasket();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Column(
+        children: [
+          Icon(Icons.shopping_basket_outlined, size: 40, color: cs.onSurfaceVariant),
+          const SizedBox(height: 10),
+          Text('Your basket is empty', style: tt.titleMedium),
+          const SizedBox(height: 4),
+          Text('Scan the first product to start a comparison.',
+              textAlign: TextAlign.center,
+              style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant)),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompareBar extends StatelessWidget {
+  final List<Product> products;
+  final bool busy;
+  final VoidCallback onCompare;
+  const _CompareBar({required this.products, required this.busy, required this.onCompare});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final ready = products.length >= 2;
+    final shown = products.take(4).toList();
+    return Material(
+      color: cs.surfaceContainer,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          child: Row(
+            children: [
+              // Overlapping colour dots, one per product.
+              SizedBox(
+                width: 14.0 * shown.length + 10,
+                height: 24,
+                child: Stack(
                   children: [
-                    Text('Looking up product…', style: TextStyle(fontWeight: FontWeight.w600)),
-                    SizedBox(height: 10),
-                    LinearProgressIndicator(),
+                    for (final (i, p) in shown.indexed)
+                      Positioned(
+                        left: i * 14.0,
+                        child: Container(
+                          width: 24,
+                          height: 24,
+                          decoration: BoxDecoration(
+                            color: p.color,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: cs.surfaceContainer, width: 2),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
-            ),
-          ],
-          const SizedBox(height: 16),
-          if (_items.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 36),
-              child: Column(
-                children: [
-                  Icon(Icons.shopping_basket_outlined,
-                      size: 56, color: cs.onSurfaceVariant.withValues(alpha: 0.6)),
-                  const SizedBox(height: 10),
-                  Text('No products yet', style: TextStyle(color: cs.onSurfaceVariant)),
-                ],
-              ),
-            )
-          else ...[
-            Text('Scanned products (${_items.length})',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 8),
-            for (final p in _items)
-              Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                child: ListTile(
-                  leading: ProductThumb(p),
-                  title: Text(p.name,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text(
-                      [p.category, p.barcode].join(' · '),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.close),
-                    tooltip: 'Remove',
-                    onPressed: () => _remove(p),
-                  ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  ready ? '${products.length} products ready' : 'Add one more to compare',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
-          ],
-          const SizedBox(height: 12),
-          Text(
-            'Nutrition data: Open Food Facts (crowd-sourced, may be incomplete or out of date).',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: cs.onSurfaceVariant),
+              FilledButton.icon(
+                onPressed: ready && !busy ? onCompare : null,
+                icon: const Icon(Icons.compare_arrows),
+                label: const Text('Compare'),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

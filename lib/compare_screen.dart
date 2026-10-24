@@ -73,13 +73,17 @@ class _CompareScreenState extends State<CompareScreen> {
           ],
         ),
         const SizedBox(height: 12),
-        SegmentedButton<bool>(
-          segments: const [
-            ButtonSegment(value: false, label: Text('Per 100 g')),
-            ButtonSegment(value: true, label: Text('Per serving')),
-          ],
-          selected: {_perServing},
-          onSelectionChanged: (s) => setState(() => _perServing = s.first),
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<bool>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(value: false, label: Text('Per 100 g')),
+              ButtonSegment(value: true, label: Text('Per serving')),
+            ],
+            selected: {_perServing},
+            onSelectionChanged: (s) => setState(() => _perServing = s.first),
+          ),
         ),
         if (_perServing && missingServing)
           Padding(
@@ -90,11 +94,10 @@ class _CompareScreenState extends State<CompareScreen> {
             ),
           ),
         const SizedBox(height: 14),
-        _GroupedOverview(products: visible, perServing: _perServing),
-        const SizedBox(height: 12),
         for (final m in Metric.values)
           _MetricCard(metric: m, products: visible, perServing: _perServing),
         const SizedBox(height: 4),
+        const SizedBox(height: 6),
         _SideBySideTable(products: visible, perServing: _perServing),
         const SizedBox(height: 12),
         _IngredientsCard(products: visible),
@@ -256,93 +259,10 @@ class _CompareScreenState extends State<CompareScreen> {
 // Nutrition widgets
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Numbers that line up in columns when products are compared.
+const _tabular = [FontFeature.tabularFigures()];
+
 double _maxOf(Iterable<double?> vs) => vs.whereType<double>().fold<double>(0, math.max);
-
-class _GroupedOverview extends StatelessWidget {
-  final List<Product> products;
-  final bool perServing;
-  const _GroupedOverview({required this.products, required this.perServing});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 14, 12, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Overview',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w700)),
-            Text('Columns are scaled within each nutrient.',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: cs.onSurfaceVariant)),
-            const SizedBox(height: 10),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [for (final m in Metric.values) Expanded(child: _group(context, m))],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _group(BuildContext context, Metric m) {
-    final values = {
-      for (final p in products) p.id: p.nutrition.value(m, perServing: perServing)
-    };
-    final maxV = _maxOf(values.values);
-    final denom = maxV == 0 ? 1.0 : maxV;
-    return Column(
-      children: [
-        SizedBox(
-          height: 140,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              for (final p in products)
-                TweenAnimationBuilder<double>(
-                  tween: Tween(begin: 0, end: (values[p.id] ?? 0) / denom),
-                  duration: const Duration(milliseconds: 700),
-                  curve: Curves.easeOutCubic,
-                  builder: (_, f, _) => Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(fmt(values[p.id]), style: const TextStyle(fontSize: 9)),
-                      const SizedBox(height: 2),
-                      Container(
-                        width: 12,
-                        height: math.max(3, 104 * f),
-                        decoration: BoxDecoration(
-                          color: values[p.id] == null
-                              ? Colors.grey.withValues(alpha: 0.3)
-                              : p.color,
-                          borderRadius:
-                              const BorderRadius.vertical(top: Radius.circular(4)),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 6),
-        Icon(m.icon, size: 16),
-        Text(m.label, style: Theme.of(context).textTheme.labelSmall),
-        Text(m.unit,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Colors.grey)),
-      ],
-    );
-  }
-}
 
 class _MetricCard extends StatefulWidget {
   final Metric metric;
@@ -398,67 +318,81 @@ class _MetricCardState extends State<_MetricCard> {
             const SizedBox(height: 10),
             for (final p in widget.products)
               InkWell(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(10),
                 onTap: () => setState(() => _selected = _selected == p.id ? null : p.id),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 5),
-                  child: Row(
+                  padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      SizedBox(
-                        width: 104,
-                        child: Text(p.name,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight:
-                                  _selected == p.id ? FontWeight.w700 : FontWeight.w500,
-                            )),
+                      Row(
+                        children: [
+                          CircleAvatar(backgroundColor: p.color, radius: 5),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(p.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight:
+                                      _selected == p.id ? FontWeight.w700 : FontWeight.w500,
+                                )),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                              values[p.id] == null ? 'n/a' : '${fmt(values[p.id])} ${m.unit}',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 14,
+                                  color: values[p.id] == null ? cs.onSurfaceVariant : null,
+                                  fontFeatures: _tabular)),
+                        ],
                       ),
-                      Expanded(
-                        child: TweenAnimationBuilder<double>(
-                          tween: Tween(begin: 0, end: (values[p.id] ?? 0) / denom),
-                          duration: const Duration(milliseconds: 600),
-                          curve: Curves.easeOutCubic,
-                          builder: (_, f, _) => Stack(
-                            alignment: Alignment.centerLeft,
-                            children: [
-                              Container(
-                                height: 18,
-                                decoration: BoxDecoration(
-                                  color: cs.surfaceContainerHighest,
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
+                      const SizedBox(height: 6),
+                      TweenAnimationBuilder<double>(
+                        tween: Tween(begin: 0, end: (values[p.id] ?? 0) / denom),
+                        duration: const Duration(milliseconds: 600),
+                        curve: Curves.easeOutCubic,
+                        builder: (_, f, _) => Stack(
+                          alignment: Alignment.centerLeft,
+                          children: [
+                            Container(
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: cs.surfaceContainerHighest,
+                                borderRadius: BorderRadius.circular(5),
                               ),
-                              if (values[p.id] != null)
-                                FractionallySizedBox(
-                                  widthFactor: f.clamp(0.02, 1.0),
-                                  child: Container(
-                                    height: 18,
-                                    decoration: BoxDecoration(
-                                      color: p.color,
-                                      borderRadius: BorderRadius.circular(6),
-                                      border: _selected == p.id
-                                          ? Border.all(color: cs.onSurface, width: 1.5)
-                                          : null,
-                                    ),
+                            ),
+                            if (values[p.id] != null)
+                              FractionallySizedBox(
+                                widthFactor: f.clamp(0.02, 1.0),
+                                child: Container(
+                                  height: 10,
+                                  decoration: BoxDecoration(
+                                    color: p.color,
+                                    borderRadius: BorderRadius.circular(5),
+                                    border: _selected == p.id
+                                        ? Border.all(color: cs.onSurface, width: 1.5)
+                                        : null,
                                   ),
                                 ),
-                            ],
-                          ),
+                              ),
+                          ],
                         ),
-                      ),
-                      SizedBox(
-                        width: 70,
-                        child: Text(
-                            values[p.id] == null ? 'n/a' : '${fmt(values[p.id])} ${m.unit}',
-                            textAlign: TextAlign.end,
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w600, fontSize: 12)),
                       ),
                     ],
                   ),
                 ),
+              ),
+            if (_selected == null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, left: 4),
+                child: Text('Tap a product to compare it with a daily reference.',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(color: cs.onSurfaceVariant)),
               ),
             AnimatedSize(
               duration: const Duration(milliseconds: 200),
@@ -526,11 +460,17 @@ class _SideBySideTable extends StatelessWidget {
                     for (final p in products)
                       Padding(
                         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
-                        child: Text(p.name,
-                            maxLines: 3,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.labelSmall),
+                        child: Column(
+                          children: [
+                            CircleAvatar(backgroundColor: p.color, radius: 5),
+                            const SizedBox(height: 4),
+                            Text(p.name,
+                                maxLines: 3,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.center,
+                                style: Theme.of(context).textTheme.labelSmall),
+                          ],
+                        ),
                       ),
                   ]),
                   for (final m in Metric.values)
@@ -543,7 +483,8 @@ class _SideBySideTable extends StatelessWidget {
                       ),
                       for (final p in products)
                         Text(fmt(p.nutrition.value(m, perServing: perServing)),
-                            textAlign: TextAlign.center),
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontFeatures: _tabular)),
                     ]),
                   TableRow(children: [
                     const Padding(
