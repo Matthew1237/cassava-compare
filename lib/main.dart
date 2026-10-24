@@ -498,7 +498,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final p = await _off.lookup(code);
       if (!mounted) return;
       if (p == null) {
-        _toast('Barcode $code was not found in Open Food Facts.');
+        _toast('Barcode $code is not a valid food product.');
       } else {
         p.color = productPalette[_items.length % productPalette.length];
         try {
