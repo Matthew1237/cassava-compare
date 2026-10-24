@@ -159,7 +159,7 @@ double? _num(dynamic v) => v is num ? v.toDouble() : double.tryParse('$v');
 
 /// "400 g" or "330 ml" -> 400 / 330. Null for other units or no number.
 double? _gramsFromText(String s) {
-  final m = RegExp(r'^(\d+(?:[.,]\d+)?)\s*(g|ml)', caseSensitive: false).firstMatch(s.trim());
+  final m = RegExp(r'^(d+(?:[.,]d+)?)s*(g|ml)b', caseSensitive: false).firstMatch(s.trim());
   return m == null ? null : double.tryParse(m.group(1)!.replaceAll(',', '.'));
 }
 
