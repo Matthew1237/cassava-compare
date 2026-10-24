@@ -49,7 +49,7 @@ class NutriCompareApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'NutriCompare',
+      title: 'Cassava',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
