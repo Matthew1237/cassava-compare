@@ -46,10 +46,23 @@ class Candidate {
   String get display => withBrand(brand, name);
 }
 
+/// Open Food Facts answers HTTP 503 when an IP exceeds its limit
+/// (10 searches per minute) or when the server is overloaded.
+class RateLimitException extends LookupException {
+  RateLimitException()
+      : super('Open Food Facts is busy or limiting searches (10 per minute). '
+            'Wait about a minute, then try again.');
+}
+
 class FrontLabelSearch {
   static const _headers = {'User-Agent': 'NutriCompare/1.0 (flutter app)'};
 
+  /// Remembers results per query so repeating a search costs no request.
+  static final Map<String, List<Candidate>> _cache = {};
+
   Future<List<Candidate>> search(String text) async {
+    final cached = _cache[text];
+    if (cached != null) return cached;
     final uri = Uri.https('world.openfoodfacts.org', '/cgi/search.pl', {
       'search_terms': text,
       'search_simple': '1',
@@ -66,13 +79,16 @@ class FrontLabelSearch {
     } catch (_) {
       throw LookupException('Could not reach the product database. Are you online?');
     }
+    if (res.statusCode == 503 || res.statusCode == 429) {
+      throw RateLimitException();
+    }
     if (res.statusCode != 200) {
       throw LookupException('Product database error (${res.statusCode}).');
     }
     final json = jsonDecode(res.body) as Map<String, dynamic>;
     final list = (json['products'] as List?) ?? const [];
     String s(dynamic v) => (v as String?)?.trim() ?? '';
-    return [
+    return _cache[text] = [
       for (final p in list.cast<Map<String, dynamic>>())
         if (s(p['code']).isNotEmpty && s(p['product_name']).isNotEmpty)
           Candidate(s(p['code']), s(p['product_name']),
@@ -80,8 +96,11 @@ class FrontLabelSearch {
     ];
   }
 
-  /// Runs several queries and merges the results by barcode.
-  Future<List<Candidate>> searchMany(List<String> queries) async {
+  /// Runs queries one at a time and merges the results by barcode. Stops as
+  /// soon as there are [enough] candidates, and stops immediately when the
+  /// server says it is limiting us, so one search uses as few requests as
+  /// possible.
+  Future<List<Candidate>> searchMany(List<String> queries, {int enough = 8}) async {
     final merged = <String, Candidate>{};
     LookupException? lastError;
     var anySucceeded = false;
@@ -92,6 +111,10 @@ class FrontLabelSearch {
           merged.putIfAbsent(c.barcode, () => c);
         }
         anySucceeded = true;
+        if (merged.length >= enough) break;
+      } on RateLimitException {
+        if (merged.isNotEmpty) break; // show what we already have
+        rethrow;
       } on LookupException catch (e) {
         lastError = e;
       }
@@ -208,27 +231,123 @@ double ocrDistance(String a, String b) {
   return d[n][m];
 }
 
-double _sim(String a, String b) {
-  final m = math.max(a.length, b.length);
-  return m == 0 ? 0 : (1 - ocrDistance(a, b) / m).clamp(0.0, 1.0);
+/// Letters a and b count as "the same" if equal or an OCR look-alike (0/o...).
+bool _alike(String x, String y) => x == y || _confusablePairs.contains('$x$y');
+
+/// Longest common subsequence: the most letters of [a] that appear in [b] in
+/// the same order, even when other letters are mixed in between.
+/// lcsLength('chocolate', 'chocolyate') == 9.
+int lcsLength(String a, String b) {
+  if (a.isEmpty || b.isEmpty) return 0;
+  var prev = List<int>.filled(b.length + 1, 0);
+  for (var i = 1; i <= a.length; i++) {
+    final cur = List<int>.filled(b.length + 1, 0);
+    for (var j = 1; j <= b.length; j++) {
+      cur[j] = _alike(a[i - 1], b[j - 1])
+          ? prev[j - 1] + 1
+          : math.max(prev[j], cur[j - 1]);
+    }
+    prev = cur;
+  }
+  return prev[b.length];
 }
 
+String _digitsToLetters(String s) {
+  const map = {
+    '0': 'o', '1': 'i', '2': 'z', '3': 'e', '4': 'a', '5': 's', '6': 'g', '8': 'b', '9': 'g',
+  };
+  return s.split('').map((c) => map[c] ?? c).join();
+}
+
+/// Share of two-letter groups the words have in common (Dice coefficient).
+/// Used only as a guard against scattered, unrelated letter matches.
+double _bigramDice(String a, String b) {
+  if (a.length < 2 || b.length < 2) return 1;
+  final counts = <String, int>{};
+  for (var i = 0; i < a.length - 1; i++) {
+    final g = a.substring(i, i + 2);
+    counts[g] = (counts[g] ?? 0) + 1;
+  }
+  var shared = 0;
+  for (var j = 0; j < b.length - 1; j++) {
+    final g = b.substring(j, j + 2);
+    final c = counts[g] ?? 0;
+    if (c > 0) {
+      shared++;
+      counts[g] = c - 1;
+    }
+  }
+  return 2 * shared / ((a.length - 1) + (b.length - 1));
+}
+
+/// 0..1 similarity between a (possibly jumbled) OCR word and a database word.
+///
+/// Letters found in the same order in both words (extra letters in between
+/// are fine) are measured two ways and averaged:
+///   - the share of the OCR word that matches the database word
+///   - the share of the database word that matches the OCR word
+/// "chocolyate" (OCR) vs "chocolate" (database): all 9 letters of "chocolate"
+/// appear in order, so 9/10 of the OCR word and 9/9 of the database word
+/// match, and the average is 95%.
+/// OCR-aware edit distance covers swaps like "rn" for "m", and the better of
+/// the two scores is used. If the words share almost no two-letter groups,
+/// the match is likely scattered noise and the score is reduced.
+double similarity(String a, String b) {
+  if (a.isEmpty || b.isEmpty) return 0;
+  final common = lcsLength(a, b);
+  final lcsScore = (common / a.length + common / b.length) / 2;
+  final m = math.max(a.length, b.length);
+  final edit = 1 - ocrDistance(a, b) / m;
+  var s = math.max(lcsScore, edit).clamp(0.0, 1.0);
+  if (_bigramDice(_digitsToLetters(a), _digitsToLetters(b)) < 0.2) s *= 0.7;
+  return s;
+}
+
+double _sim(String a, String b) => similarity(a, b);
+
 /// How well the OCR text matches "brand + name", tolerant of OCR mix-ups.
+///
+/// Averages two percentages, so only a real full match reaches 100%:
+///   - how much of the OCR text is found in the database name
+///   - how much of the database name is found in the OCR text
+/// "chocolate" vs "Chocolate" is 100%, but "chocolate" vs "Hershey's
+/// Chocolate Bar" is lower, because most of that name is not in the photo text.
 double textScore(String ocr, Candidate c) {
   final ocrTokens = _norm(ocr).split(' ').where((t) => t.length >= 3).toList();
-  final candTokens =
-      _norm('${c.brand} ${c.name}').split(' ').where((t) => t.isNotEmpty).toList();
-  if (ocrTokens.isEmpty || candTokens.isEmpty) return 0;
-  var sum = 0.0;
-  for (final o in ocrTokens) {
-    var best = 0.0;
-    for (final t in candTokens) {
-      best = math.max(best, _sim(o, t));
-    }
-    // Weak token matches are mostly noise; don't let them add up.
-    sum += best >= 0.6 ? best : 0;
+  var candTokens =
+      _norm('${c.brand} ${c.name}').split(' ').where((t) => t.length >= 3).toList();
+  if (candTokens.isEmpty) {
+    candTokens =
+        _norm('${c.brand} ${c.name}').split(' ').where((t) => t.isNotEmpty).toList();
   }
-  return sum / ocrTokens.length;
+  if (ocrTokens.isEmpty || candTokens.isEmpty) return 0;
+
+  // Average, over [from] words, of the best match found among [to] words.
+  // Weak matches are mostly noise; don't let them add up.
+  double coverage(List<String> from, List<String> to) {
+    var sum = 0.0;
+    for (final f in from) {
+      var best = 0.0;
+      for (final t in to) {
+        best = math.max(best, _sim(f, t));
+      }
+      sum += best >= 0.6 ? best : 0;
+    }
+    return sum / from.length;
+  }
+
+  final tokenScore =
+      (coverage(ocrTokens, candTokens) + coverage(candTokens, ocrTokens)) / 2;
+
+  // Also compare the whole text with spaces removed, so words that OCR split
+  // or glued together ("choco late", "cheetoscrunchy") still match. This is
+  // already a two-way average (see similarity).
+  final ocrAll = ocrTokens.join();
+  final candAll = candTokens.join();
+  final phraseScore = ocrAll.length >= 4 && candAll.length >= 4
+      ? similarity(ocrAll, candAll)
+      : 0.0;
+  return math.max(tokenScore, phraseScore >= 0.6 ? phraseScore : 0);
 }
 
 /// Extra search phrases with common OCR mix-ups undone, so the database can
@@ -271,7 +390,7 @@ class FrontLabelScreen extends StatefulWidget {
 }
 
 class _FrontLabelScreenState extends State<FrontLabelScreen> {
-  static const _maxQueries = 5; // Open Food Facts rate-limits search
+  static const _maxQueries = 3; // Open Food Facts allows 10 searches/min
 
   final _search = FrontLabelSearch();
   final _query = TextEditingController();
