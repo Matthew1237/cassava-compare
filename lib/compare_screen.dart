@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import 'models.dart';
+import 'preferences.dart';
 import 'services.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -12,7 +13,14 @@ import 'services.dart';
 
 class CompareScreen extends StatefulWidget {
   final List<Product> products;
-  const CompareScreen({super.key, required this.products});
+
+  /// How much each factor counts toward the best-overall score.
+  final Preferences prefs;
+  const CompareScreen({
+    super.key,
+    required this.products,
+    this.prefs = const Preferences(),
+  });
 
   @override
   State<CompareScreen> createState() => _CompareScreenState();
@@ -41,7 +49,7 @@ class _CompareScreenState extends State<CompareScreen> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 3,
+      length: 2, // Nutrition + Ingredients (the Reviews tab is not shown)
       child: Scaffold(
         appBar: AppBar(
           title: Text('Comparing ${widget.products.length} products'),
@@ -118,7 +126,8 @@ class _CompareScreenState extends State<CompareScreen> {
             ),
           ),
         const SizedBox(height: 20),
-        _BestOverallCard(products: visible, perServing: _perServing),
+        _BestOverallCard(
+            products: visible, perServing: _perServing, prefs: widget.prefs),
         _sectionTitle(context, 'By Nutrient'),
         SizedBox(
           height: 44,
@@ -353,6 +362,7 @@ double? _riskLoad(Product p) => p.ingredientItems.isEmpty
             p.countRisk(RiskLevel.veryLow))
         .toDouble();
 
+/// Labels here must match [factorLabels] in preferences.dart.
 final _factors = <_Factor>[
   _Factor('Low sugar', false, (p, s) => p.nutrition.value(Metric.sugar, perServing: s)),
   _Factor('Low fat', false, (p, s) => p.nutrition.value(Metric.fat, perServing: s)),
@@ -366,18 +376,23 @@ class OverallScore {
   final Product product;
   final double? score; // 0..1, null when no factor had data
   final Map<String, double?> parts; // per factor, 0..1, null = skipped
-  final int used;
+  final int used; // factors that counted toward the score
   OverallScore(this.product, this.score, this.parts, this.used);
 }
 
 /// Each factor is scaled against the highest value in the group, so every
 /// part is 0..1 (1 = best in the group). "Low" factors are flipped
-/// (1 - value/max). The overall score is the plain average of the parts.
+/// (1 - value/max). The overall score is the weighted average of the parts,
+/// using the weights from [prefs] (a weight of 0 removes the factor).
 ///
 /// A factor is skipped for everyone when fewer than two products have data
 /// for it, or when the highest value is 0 (it can't tell products apart).
 /// A product with missing data is averaged over the factors it does have.
-List<OverallScore> computeOverall(List<Product> ps, {required bool perServing}) {
+List<OverallScore> computeOverall(
+  List<Product> ps, {
+  required bool perServing,
+  Preferences prefs = const Preferences(),
+}) {
   final parts = {for (final p in ps) p.id: <String, double?>{}};
   for (final f in _factors) {
     final vals = {for (final p in ps) p.id: f.value(p, perServing)};
@@ -393,9 +408,17 @@ List<OverallScore> computeOverall(List<Product> ps, {required bool perServing}) 
   final out = <OverallScore>[];
   for (final p in ps) {
     final m = parts[p.id]!;
-    final used = m.values.whereType<double>().toList();
-    final score = used.isEmpty ? null : used.reduce((a, b) => a + b) / used.length;
-    out.add(OverallScore(p, score, m, used.length));
+    var sum = 0.0, weightSum = 0.0;
+    var used = 0;
+    for (final f in _factors) {
+      final v = m[f.label];
+      final w = prefs.weight(f.label);
+      if (v == null || w == 0) continue;
+      sum += v * w;
+      weightSum += w;
+      used++;
+    }
+    out.add(OverallScore(p, weightSum == 0 ? null : sum / weightSum, m, used));
   }
   out.sort((a, b) => (b.score ?? -1).compareTo(a.score ?? -1));
   return out;
@@ -404,14 +427,19 @@ List<OverallScore> computeOverall(List<Product> ps, {required bool perServing}) 
 class _BestOverallCard extends StatelessWidget {
   final List<Product> products;
   final bool perServing;
-  const _BestOverallCard({required this.products, required this.perServing});
+  final Preferences prefs;
+  const _BestOverallCard({
+    required this.products,
+    required this.perServing,
+    required this.prefs,
+  });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final scores = products.length < 2
         ? <OverallScore>[]
-        : computeOverall(products, perServing: perServing);
+        : computeOverall(products, perServing: perServing, prefs: prefs);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(14),
@@ -434,7 +462,35 @@ class _BestOverallCard extends StatelessWidget {
                   .bodySmall
                   ?.copyWith(color: cs.onSurfaceVariant),
             ),
-            if (scores.isEmpty)
+            if (!prefs.isDefault)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Row(
+                  children: [
+                    Icon(Icons.tune, size: 14, color: cs.primary),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Weighted by your preferences.',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: cs.primary),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (prefs.allIgnored)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(
+                  'Every factor is set to Ignore. Raise at least one in '
+                  'Preferences on the home screen to get a score.',
+                  style: TextStyle(color: cs.onSurfaceVariant),
+                ),
+              )
+            else if (scores.isEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 10),
                 child: Text('Select at least two products to compare.',
@@ -445,9 +501,9 @@ class _BestOverallCard extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               'Scores are relative to the products you are comparing, not an '
-              'absolute health rating. All five factors count equally, and '
-              'missing data is skipped. Ingredient risk counts high = 3, '
-              'limited = 2, very low = 1.',
+              'absolute health rating. Factors are weighted by your '
+              'Preferences (equal by default), and missing data is skipped. '
+              'Ingredient risk counts high = 3, limited = 2, very low = 1.',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
@@ -462,6 +518,7 @@ class _BestOverallCard extends StatelessWidget {
   Widget _row(BuildContext context, OverallScore s, bool best) {
     final cs = Theme.of(context).colorScheme;
     final p = s.product;
+    final active = _factors.where((f) => prefs.weight(f.label) > 0).length;
     return Container(
       margin: const EdgeInsets.only(top: 10),
       padding: const EdgeInsets.all(10),
@@ -516,22 +573,28 @@ class _BestOverallCard extends StatelessWidget {
               for (final f in _factors)
                 Chip(
                   label: Text(
-                    '${f.label} ${_pct(s.parts[f.label])}',
-                    style: const TextStyle(fontSize: 11),
+                    prefs.weight(f.label) == 0
+                        ? '${f.label} off'
+                        : '${f.label} ${_pct(s.parts[f.label])}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: prefs.weight(f.label) == 0 ? cs.onSurfaceVariant : null,
+                    ),
                   ),
                   visualDensity: VisualDensity.compact,
-                  backgroundColor: p.color.withValues(alpha: 0.12),
+                  backgroundColor: p.color
+                      .withValues(alpha: prefs.weight(f.label) == 0 ? 0.04 : 0.12),
                   side: BorderSide.none,
                 ),
             ],
           ),
-          if (s.used < _factors.length)
+          if (s.used < active)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(
                 s.score == null
                     ? 'Not enough data in the database to score this product.'
-                    : 'Based on ${s.used} of ${_factors.length} factors (others had no data).',
+                    : 'Based on ${s.used} of $active factors (others had no data).',
                 style: Theme.of(context)
                     .textTheme
                     .bodySmall
@@ -1081,8 +1144,8 @@ class _NeutralityNote extends StatelessWidget {
           const Expanded(
             child: Text(
               'The overall score is relative to this group and weighs five factors '
-              'equally. Which trade-offs matter depends on your needs, so you decide '
-              'what fits.',
+              'by your preferences (equally by default). Which trade-offs matter '
+              'depends on your needs, so you decide what fits.',
               style: TextStyle(fontSize: 13),
             ),
           ),

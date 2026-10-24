@@ -25,6 +25,8 @@
 // on the compare screen: a relative score (low sugar, fat and cholesterol,
 // high protein, few risk-classified ingredients) that is only meaningful
 // within the group of products being compared, with a per-factor breakdown.
+// The user can set how much each factor counts in the Preferences card on
+// the home screen.
 //
 // File layout
 // -----------
@@ -32,6 +34,7 @@
 //   models.dart          Metric, Nutrition, Review, Product, helpers
 //   services.dart        Open Food Facts lookup, ReviewProvider, ReviewAnalyzer
 //   compare_screen.dart  compare screen, best-overall score, nutrition/review widgets
+//   preferences.dart     factor weights and the Preferences card (sliders)
 //   product_search.dart  search for a product by name
 import 'dart:math' as math;
 
@@ -41,6 +44,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'compare_screen.dart';
 import 'models.dart';
+import 'preferences.dart';
 import 'product_search.dart';
 import 'services.dart';
 
@@ -444,6 +448,9 @@ class _HomeScreenState extends State<HomeScreen> {
   final List<Product> _items = [];
   bool _busy = false;
 
+  /// How much each factor counts toward the "Best overall choice" score.
+  Preferences _prefs = const Preferences();
+
   void _toast(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -536,7 +543,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _openCompare() {
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => CompareScreen(products: List.of(_items)),
+      builder: (_) => CompareScreen(products: List.of(_items), prefs: _prefs),
     ));
   }
 
@@ -677,6 +684,12 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ],
+          const SizedBox(height: 24),
+          // Weights for the "Best overall choice" score on the compare screen.
+          PreferencesCard(
+            prefs: _prefs,
+            onChanged: (p) => setState(() => _prefs = p),
+          ),
           const SizedBox(height: 24),
           Text(
             'Nutrition data from Open Food Facts. It is crowd-sourced and may be '
