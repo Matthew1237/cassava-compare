@@ -31,6 +31,7 @@ class _CompareScreenState extends State<CompareScreen> {
     Metric.cholesterol,
     Metric.sodium,
     Metric.carbs,
+    Metric.sugar,
     Metric.protein,
   ];
 
@@ -47,13 +48,11 @@ class _CompareScreenState extends State<CompareScreen> {
           bottom: const TabBar(tabs: [
             Tab(text: 'Nutrition'),
             Tab(text: 'Ingredients'),
-            Tab(text: 'Reviews'),
           ]),
         ),
         body: TabBarView(children: [
           _buildNutritionTab(context),
           _buildIngredientsTab(context),
-          _buildReviewsTab(context),
         ]),
       ),
     );
@@ -120,7 +119,7 @@ class _CompareScreenState extends State<CompareScreen> {
           ),
         const SizedBox(height: 20),
         _BestOverallCard(products: visible, perServing: _perServing),
-        _sectionTitle(context, 'By nutrient'),
+        _sectionTitle(context, 'By Nutrient'),
         SizedBox(
           height: 44,
           child: ListView(
