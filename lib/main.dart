@@ -355,7 +355,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontWeight: FontWeight.w600)),
                   subtitle: Text(
-                      [if (p.brand.isNotEmpty) p.brand, p.category, p.barcode].join(' · '),
+                      [p.category, p.barcode].join(' · '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis),
                   trailing: IconButton(

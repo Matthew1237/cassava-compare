@@ -89,6 +89,9 @@ class Product {
   int? ratingCount;
   List<Review> reviews = [];
 
+  /// Ingredients with their over-exposure risk class (see [RiskLevel]).
+  List<Ingredient> ingredientItems = [];
+
   Product({
     required this.barcode,
     required this.name,
@@ -100,6 +103,39 @@ class Product {
   });
 
   String get id => barcode;
+
+  int countRisk(RiskLevel r) => ingredientItems.where((i) => i.risk == r).length;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ingredient risk
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Based on Open Food Facts' "risk of over exposure" class for additives.
+/// Ordinary ingredients (flour, sugar, milk...) have no class: [unclassified].
+enum RiskLevel { high, limited, veryLow, unclassified }
+
+extension RiskInfo on RiskLevel {
+  String get label => switch (this) {
+        RiskLevel.high => 'High risk',
+        RiskLevel.limited => 'Limited risk',
+        RiskLevel.veryLow => 'Very low risk',
+        RiskLevel.unclassified => 'Not classified',
+      };
+
+  Color get color => switch (this) {
+        RiskLevel.high => const Color(0xFFD32F2F),
+        RiskLevel.limited => const Color(0xFFF9A825),
+        RiskLevel.veryLow => const Color(0xFF388E3C),
+        RiskLevel.unclassified => const Color(0xFF757575),
+      };
+}
+
+class Ingredient {
+  final String name;
+  final String? code; // e.g. "E330" for additives
+  final RiskLevel risk;
+  const Ingredient(this.name, this.risk, {this.code});
 }
 
 /// Colors assigned to products in the order they are added.
@@ -115,6 +151,15 @@ const productPalette = [
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// "Cheetos" + "Crunchy" -> "Cheetos Crunchy". Skips the brand when the
+/// product name already contains it.
+String withBrand(String brand, String name) {
+  final b = brand.trim(), n = name.trim();
+  if (b.isEmpty) return n;
+  if (n.isEmpty) return b;
+  return n.toLowerCase().contains(b.toLowerCase()) ? n : '$b $n';
+}
 
 String fmt(double? v) {
   if (v == null) return '–';

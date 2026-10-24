@@ -29,6 +29,7 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 
+import 'models.dart';
 import 'services.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -40,6 +41,9 @@ class Candidate {
   final String? imageUrl;
   double score = 0;
   Candidate(this.barcode, this.name, this.brand, this.imageUrl);
+
+  /// Brand + product name, e.g. "Cheetos Crunchy".
+  String get display => withBrand(brand, name);
 }
 
 class FrontLabelSearch {
@@ -416,10 +420,9 @@ class _FrontLabelScreenState extends State<FrontLabelScreen> {
                     errorBuilder: (_, _, _) => const Icon(Icons.shopping_bag_outlined)),
           ),
         ),
-        title: Text(c.name, maxLines: 2, overflow: TextOverflow.ellipsis),
+        title: Text(c.display, maxLines: 2, overflow: TextOverflow.ellipsis),
         subtitle: Text([
           if (best) 'Best match',
-          if (c.brand.isNotEmpty) c.brand,
           c.barcode,
         ].join(' · ')),
         trailing: Text('${(c.score * 100).round()}%',

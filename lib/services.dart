@@ -20,7 +20,9 @@ class LookupException implements Exception {
 class OpenFoodFactsService {
   static const _fields =
       'code,product_name,brands,categories,image_front_small_url,ingredients_text,'
-      'nutriments,serving_quantity';
+      'ingredients,additives_tags,nutriments,serving_quantity';
+
+  final AdditiveRiskService risks = AdditiveRiskService();
 
   /// Returns null when the barcode is not in the database.
   Future<Product?> lookup(String barcode) async {
@@ -64,10 +66,16 @@ class OpenFoodFactsService {
     final name = clean(p['product_name']);
     final cats = clean(p['categories']);
 
-    return Product(
+    // Risk data is a nice-to-have; never fail the lookup because of it.
+    try {
+      await risks.ensureLoaded();
+    } catch (_) {}
+
+    final brand = clean(p['brands']).split(',').first.trim();
+    final product = Product(
       barcode: barcode,
-      name: name.isEmpty ? 'Unnamed product ($barcode)' : name,
-      brand: clean(p['brands']).split(',').first.trim(),
+      name: name.isEmpty ? 'Unnamed product ($barcode)' : withBrand(brand, name),
+      brand: brand,
       category: cats.isEmpty ? 'Food' : cats.split(',').last.trim(),
       imageUrl: p['image_front_small_url'] as String?,
       ingredients: clean(p['ingredients_text']).isEmpty ? null : clean(p['ingredients_text']),
@@ -79,6 +87,140 @@ class OpenFoodFactsService {
         servingGrams: num_(p['serving_quantity']),
       ),
     );
+    product.ingredientItems = risks.buildIngredients(
+      ingredients: p['ingredients'],
+      additiveTags: p['additives_tags'],
+      fallbackText: product.ingredients,
+    );
+    return product;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ingredient risk (Open Food Facts additives taxonomy)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Loads the Open Food Facts additives taxonomy once and classifies
+/// ingredients by its "risk of over exposure" property (high / moderate /
+/// no or very low). Additives with no class, and ordinary ingredients, are
+/// reported as [RiskLevel.unclassified] rather than guessed.
+class AdditiveRiskService {
+  static const _url = '/data/taxonomies/additives.json';
+
+  final Map<String, RiskLevel?> _risk = {};
+  final Map<String, String> _names = {};
+  bool _loaded = false;
+  Future<void>? _loading;
+
+  bool get isLoaded => _loaded;
+
+  Future<void> ensureLoaded() => _loading ??= _load();
+
+  Future<void> _load() async {
+    try {
+      final res = await http
+          .get(Uri.https('static.openfoodfacts.org', _url),
+              headers: {'User-Agent': 'NutriCompare/1.0 (flutter app)'})
+          .timeout(const Duration(seconds: 20));
+      if (res.statusCode != 200) throw LookupException('Risk data unavailable.');
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      for (final e in data.entries) {
+        final v = e.value;
+        if (v is! Map) continue;
+        _risk[e.key] = _parseRisk(v['efsa_evaluation_overexposure_risk']);
+        final n = v['name'];
+        final en = n is Map ? n['en'] : null;
+        if (en is String && en.isNotEmpty) _names[e.key] = en;
+      }
+      _loaded = _risk.isNotEmpty;
+    } catch (_) {
+      _loading = null; // allow a retry on the next lookup
+      rethrow;
+    }
+  }
+
+  static RiskLevel? _parseRisk(dynamic raw) {
+    String? s;
+    if (raw is String) {
+      s = raw;
+    } else if (raw is Map && raw.isNotEmpty) {
+      s = (raw['en'] ?? raw.values.first).toString();
+    }
+    if (s == null) return null;
+    s = s.toLowerCase();
+    if (s.contains('high')) return RiskLevel.high;
+    if (s.contains('moderate')) return RiskLevel.limited;
+    if (s.contains('no') || s.contains('low')) return RiskLevel.veryLow;
+    return null;
+  }
+
+  /// "en:e330" style tag from an ingredient id or its printed text.
+  static String? _additiveTag(String? id, String text) {
+    final fromId = RegExp(r'^en:(e\d{3,4}[a-z]*)').firstMatch(id ?? '');
+    if (fromId != null) return 'en:${fromId.group(1)}';
+    final fromText =
+        RegExp(r'\bE\s?(\d{3,4}[a-z]?)\b', caseSensitive: false).firstMatch(text);
+    if (fromText != null) return 'en:e${fromText.group(1)!.toLowerCase()}';
+    return null;
+  }
+
+  static String _codeOf(String tag) => tag.replaceFirst('en:', '').toUpperCase();
+
+  List<Ingredient> buildIngredients({
+    required dynamic ingredients,
+    required dynamic additiveTags,
+    String? fallbackText,
+  }) {
+    final out = <Ingredient>[];
+    final seenTags = <String>{};
+    final seenNames = <String>{};
+
+    void add(String name, String? id) {
+      final label = name.trim();
+      if (label.isEmpty || !seenNames.add(label.toLowerCase())) return;
+      final tag = _additiveTag(id, label);
+      if (tag != null && _risk.containsKey(tag)) {
+        seenTags.add(tag);
+        out.add(Ingredient(label, _risk[tag] ?? RiskLevel.unclassified,
+            code: _codeOf(tag)));
+      } else {
+        out.add(Ingredient(label, RiskLevel.unclassified));
+      }
+    }
+
+    void walk(dynamic list) {
+      if (list is! List) return;
+      for (final i in list) {
+        if (i is! Map) continue;
+        final nested = i['ingredients'];
+        if (nested is List && nested.isNotEmpty) {
+          walk(nested); // keep the leaf ingredients only
+        } else {
+          add((i['text'] ?? i['id'] ?? '').toString(), i['id'] as String?);
+        }
+      }
+    }
+
+    walk(ingredients);
+
+    if (out.isEmpty && fallbackText != null) {
+      for (final part in fallbackText.split(RegExp(r'[,;]'))) {
+        add(part.replaceAll(RegExp(r'[()\[\]_*]'), ' '), null);
+      }
+    }
+
+    // Additives the database found that we did not match above.
+    if (additiveTags is List) {
+      for (final t in additiveTags.whereType<String>()) {
+        if (seenTags.contains(t) || !_risk.containsKey(t)) continue;
+        final name = _names[t] ?? _codeOf(t);
+        if (seenNames.add(name.toLowerCase())) {
+          out.add(Ingredient(name, _risk[t] ?? RiskLevel.unclassified,
+              code: _codeOf(t)));
+        }
+      }
+    }
+    return out;
   }
 }
 

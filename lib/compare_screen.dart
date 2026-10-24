@@ -572,11 +572,19 @@ class _IngredientsCard extends StatelessWidget {
   final List<Product> products;
   const _IngredientsCard({required this.products});
 
+  static const _order = [
+    RiskLevel.high,
+    RiskLevel.limited,
+    RiskLevel.veryLow,
+    RiskLevel.unclassified,
+  ];
+
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -585,28 +593,126 @@ class _IngredientsCard extends StatelessWidget {
                     .textTheme
                     .titleMedium
                     ?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 8),
-            for (final p in products)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            const SizedBox(height: 2),
+            Text('Tap a product to see which ingredients fall in each group.',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant)),
+            const SizedBox(height: 4),
+            for (final p in products) _productTile(context, p),
+            const SizedBox(height: 6),
+            Text(
+              'Groups come from Open Food Facts\' additive data: the risk of '
+              'exceeding acceptable intake, not proof of harm. Ordinary '
+              'ingredients (flour, sugar, milk...) have no class and are shown '
+              'as "Not classified". Ingredient lists may be incomplete.',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: cs.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _productTile(BuildContext context, Product p) {
+    final hasItems = p.ingredientItems.isNotEmpty;
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsets.only(bottom: 8),
+        leading: CircleAvatar(backgroundColor: p.color, radius: 6),
+        title: Text(p.name,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w600)),
+        subtitle: !hasItems
+            ? Text(p.ingredients ?? 'No ingredient list in the database.',
+                maxLines: 2, overflow: TextOverflow.ellipsis)
+            : Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
                   children: [
-                    Row(children: [
-                      CircleAvatar(backgroundColor: p.color, radius: 5),
-                      const SizedBox(width: 6),
-                      Expanded(
-                          child: Text(p.name,
-                              style: const TextStyle(fontWeight: FontWeight.w600))),
-                    ]),
-                    const SizedBox(height: 2),
-                    Text(p.ingredients ?? 'No ingredient list in the database.',
-                        style: Theme.of(context).textTheme.bodySmall),
+                    for (final r in _order)
+                      if (r != RiskLevel.unclassified || p.countRisk(r) > 0)
+                        _CountPill(level: r, count: p.countRisk(r)),
                   ],
                 ),
               ),
-          ],
-        ),
+        children: [
+          if (!hasItems)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(p.ingredients ?? 'No ingredient list in the database.',
+                  style: Theme.of(context).textTheme.bodySmall),
+            )
+          else
+            for (final r in _order)
+              if (p.countRisk(r) > 0) _group(context, p, r),
+        ],
+      ),
+    );
+  }
+
+  Widget _group(BuildContext context, Product p, RiskLevel r) {
+    final items = p.ingredientItems.where((i) => i.risk == r).toList();
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: r.color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(10),
+        border: Border(left: BorderSide(color: r.color, width: 4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('${r.label} (${items.length})',
+              style: TextStyle(fontWeight: FontWeight.w700, color: r.color)),
+          const SizedBox(height: 4),
+          Text(
+            items
+                .map((i) => i.code == null || i.name.toUpperCase().contains(i.code!)
+                    ? i.name
+                    : '${i.name} (${i.code})')
+                .join(', '),
+            style: const TextStyle(fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CountPill extends StatelessWidget {
+  final RiskLevel level;
+  final int count;
+  const _CountPill({required this.level, required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: level.color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: level.color.withValues(alpha: 0.6)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircleAvatar(backgroundColor: level.color, radius: 4),
+          const SizedBox(width: 5),
+          Text('$count ${level.label.toLowerCase()}',
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+        ],
       ),
     );
   }
