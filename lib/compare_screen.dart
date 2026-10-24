@@ -2,9 +2,13 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'models.dart';
+import 'saved.dart';
 import 'services.dart';
+import 'watchlist.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Compare screen
@@ -12,7 +16,8 @@ import 'services.dart';
 
 class CompareScreen extends StatefulWidget {
   final List<Product> products;
-  const CompareScreen({super.key, required this.products});
+  final WatchList watch;
+  const CompareScreen({super.key, required this.products, this.watch = const WatchList()});
 
   @override
   State<CompareScreen> createState() => _CompareScreenState();
@@ -23,8 +28,8 @@ class _CompareScreenState extends State<CompareScreen> {
   bool _perServing = false;
   String? _themeFilter;
 
-  /// The nutrient shown in the "By nutrient" graph.
-  Metric _metric = Metric.calories;
+  /// The nutrient shown in the "By nutrient" graph: the first one the user watches.
+  late Metric _metric = _metricsInOrder.first;
   static const _tabMetrics = [
     Metric.calories,
     Metric.fat,
@@ -34,8 +39,47 @@ class _CompareScreenState extends State<CompareScreen> {
     Metric.protein,
   ];
 
+  /// Watched nutrients first, then the usual tabs.
+  List<Metric> get _metricsInOrder => [
+        ...widget.watch.nutrients,
+        ..._tabMetrics.where((m) => !widget.watch.nutrients.contains(m)),
+      ];
+
   List<Product> get _visible =>
       widget.products.where((p) => !_hidden.contains(p.id)).toList();
+
+  Future<void> _share() => SharePlus.instance.share(ShareParams(
+        text: comparisonSummary(_visible, perServing: _perServing),
+        subject: 'Cassava comparison',
+      ));
+
+  Future<void> _save() async {
+    final names = widget.products.map((p) => p.name.split(' ').take(2).join(' '));
+    final controller = TextEditingController(text: names.take(2).join(' vs '));
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Save comparison'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Name'),
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    await SavedStore.add(
+        SavedComparison(name, [for (final p in widget.products) p.barcode], DateTime.now()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved "$name"')));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -44,6 +88,18 @@ class _CompareScreenState extends State<CompareScreen> {
       child: Scaffold(
         appBar: AppBar(
           title: Text('Comparing ${widget.products.length} products'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.bookmark_add_outlined),
+              tooltip: 'Save comparison',
+              onPressed: _save,
+            ),
+            IconButton(
+              icon: const Icon(Icons.ios_share),
+              tooltip: 'Share comparison',
+              onPressed: _share,
+            ),
+          ],
           bottom: const TabBar(tabs: [
             Tab(text: 'Nutrition'),
             Tab(text: 'Ingredients'),
@@ -118,6 +174,10 @@ class _CompareScreenState extends State<CompareScreen> {
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ),
+        if (!widget.watch.isEmpty) ...[
+          const SizedBox(height: 20),
+          _WatchCard(products: visible, watch: widget.watch),
+        ],
         const SizedBox(height: 20),
         _BestOverallCard(products: visible, perServing: _perServing),
         _sectionTitle(context, 'By nutrient'),
@@ -126,7 +186,7 @@ class _CompareScreenState extends State<CompareScreen> {
           child: ListView(
             scrollDirection: Axis.horizontal,
             children: [
-              for (final m in _tabMetrics)
+              for (final m in _metricsInOrder)
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ChoiceChip(
@@ -712,6 +772,15 @@ class _SideBySideTable extends StatelessWidget {
 
   static const _labelWidth = 112.0;
 
+  TableRow _row(String label, List<String> cells) => TableRow(children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
+        ),
+        for (final c in cells)
+          Text(c, textAlign: TextAlign.center, style: const TextStyle(fontFeatures: _tabular)),
+      ]);
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -778,6 +847,14 @@ class _SideBySideTable extends StatelessWidget {
                               : '${fmt(p.nutrition.servingGrams)} g',
                           textAlign: TextAlign.center),
                   ]),
+                  if (products.any((p) => p.price != null)) ...[
+                    _row('Price', [
+                      for (final p in products) p.price?.toStringAsFixed(2) ?? '–',
+                    ]),
+                    _row('Price / 100 g', [
+                      for (final p in products) p.pricePer100g?.toStringAsFixed(2) ?? '–',
+                    ]),
+                  ],
                 ],
               ),
             )),
@@ -891,15 +968,149 @@ class _IngredientsCard extends StatelessWidget {
           Text('${r.label} (${items.length})',
               style: TextStyle(fontWeight: FontWeight.w700, color: r.color)),
           const SizedBox(height: 4),
-          Text(
-            items
-                .map((i) => i.code == null || i.name.toUpperCase().contains(i.code!)
-                    ? i.name
-                    : '${i.name} (${i.code})')
-                .join(', '),
-            style: const TextStyle(fontSize: 13),
+          Wrap(
+            runSpacing: 2,
+            children: [
+              for (final (n, i) in items.indexed)
+                _ingredientText(context, i, last: n == items.length - 1),
+            ],
           ),
         ],
+      ),
+    );
+  }
+
+  /// Additives (with an E-number) are tappable and open a short explainer.
+  Widget _ingredientText(BuildContext context, Ingredient i, {required bool last}) {
+    final label = i.code == null || i.name.toUpperCase().contains(i.code!)
+        ? i.name
+        : '${i.name} (${i.code})';
+    final sep = last ? '' : ', ';
+    if (i.code == null) return Text('$label$sep', style: const TextStyle(fontSize: 13));
+    return InkWell(
+      borderRadius: BorderRadius.circular(4),
+      onTap: () => showIngredientInfo(context, i),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Text.rich(TextSpan(children: [
+          TextSpan(
+            text: label,
+            style: const TextStyle(
+                fontSize: 13,
+                decoration: TextDecoration.underline,
+                decorationStyle: TextDecorationStyle.dotted),
+          ),
+          TextSpan(text: sep, style: const TextStyle(fontSize: 13)),
+        ])),
+      ),
+    );
+  }
+}
+
+/// What an additive is, what it's used for, and its over-exposure class.
+void showIngredientInfo(BuildContext context, Ingredient i) {
+  final tt = Theme.of(context).textTheme;
+  final cs = Theme.of(context).colorScheme;
+  final risk = switch (i.risk) {
+    RiskLevel.high => 'Open Food Facts rates the risk of going over the acceptable '
+        'daily intake as high.',
+    RiskLevel.limited => 'Open Food Facts rates the risk of going over the acceptable '
+        'daily intake as moderate.',
+    RiskLevel.veryLow => 'Open Food Facts rates the risk of going over the acceptable '
+        'daily intake as very low.',
+    RiskLevel.unclassified => 'Open Food Facts has no over-exposure risk class for it.',
+  };
+  showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (ctx) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(i.name, style: tt.titleLarge),
+            if (i.code != null)
+              Text(i.code!, style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant)),
+            const SizedBox(height: 16),
+            Text(
+              i.uses.isEmpty
+                  ? 'An additive. Open Food Facts doesn\'t list what it is used for.'
+                  : 'Used as: ${i.uses.join(', ')}.',
+              style: tt.bodyLarge,
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                CircleAvatar(backgroundColor: i.risk.color, radius: 5),
+                const SizedBox(width: 8),
+                Expanded(child: Text(risk, style: tt.bodyMedium)),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text('This is about intake limits, not proof of harm.',
+                style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+            if (i.code != null) ...[
+              const SizedBox(height: 16),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.open_in_new),
+                label: const Text('More on Open Food Facts'),
+                onPressed: () => launchUrl(
+                  Uri.https('world.openfoodfacts.org', '/facets/additives/${i.code!.toLowerCase()}'),
+                  mode: LaunchMode.externalApplication,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// Watch-list matches for each product being compared.
+class _WatchCard extends StatelessWidget {
+  final List<Product> products;
+  final WatchList watch;
+  const _WatchCard({required this.products, required this.watch});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(Icons.health_and_safety_outlined, color: cs.primary),
+              const SizedBox(width: 8),
+              Text('Your watch-list', style: tt.titleMedium),
+            ]),
+            for (final p in products) ...[
+              const SizedBox(height: 12),
+              Row(children: [
+                CircleAvatar(backgroundColor: p.color, radius: 5),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(p.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                ),
+              ]),
+              const SizedBox(height: 6),
+              if (watchFlags(p, watch) case final flags when flags.isNotEmpty)
+                WatchFlagChips(flags)
+              else
+                Text('Nothing on your watch-list found',
+                    style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+            ],
+          ],
+        ),
       ),
     );
   }

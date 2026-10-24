@@ -20,7 +20,7 @@ void main() {
     expect(find.text('Cassava'), findsOneWidget);
     expect(find.text('Scan a barcode'), findsOneWidget);
     expect(find.text('Type number'), findsOneWidget);
-    expect(find.text('Front label'), findsOneWidget);
+    expect(find.text('Search'), findsOneWidget);
     expect(find.text('Your basket is empty'), findsOneWidget);
     // Compare bar only appears once something is in the basket.
     expect(find.text('Compare'), findsNothing);
@@ -35,7 +35,10 @@ void main() {
     expect(find.text('Nutrition'), findsOneWidget);
     expect(find.text('Ingredients'), findsOneWidget);
     expect(find.text('Reviews'), findsOneWidget);
-    expect(find.text('At a glance'), findsOneWidget);
+    // The list builds lazily, so scroll the section into view first.
+    await tester.scrollUntilVisible(find.text('Side by side'), 300,
+        scrollable: find.byWidgetPredicate((w) => w is Scrollable && w.axisDirection == AxisDirection.down).first);
+    expect(find.text('Side by side'), findsOneWidget);
 
     await tester.tap(find.text('Ingredients'));
     await tester.pumpAndSettle();

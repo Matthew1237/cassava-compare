@@ -110,6 +110,25 @@ class Product {
   /// Ingredients with their over-exposure risk class (see [RiskLevel]).
   List<Ingredient> ingredientItems = [];
 
+  /// Open Food Facts tags: allergens and traces ("en:milk"), and the
+  /// ingredients analysis ("en:non-vegan", "en:vegetarian"). Empty = unknown.
+  List<String> allergens = [], traces = [], analysis = [];
+
+  /// Most specific English category tag, e.g. "en:colas". Finds similar products.
+  String? categoryTag;
+
+  /// Package size in g (or ml) from the database, or as the user corrected it.
+  double? quantityGrams;
+
+  /// Shelf price the user entered, in their own currency.
+  double? price;
+
+  /// Price per 100 g, when both the price and the package size are known.
+  double? get pricePer100g {
+    final q = quantityGrams;
+    return price == null || q == null || q <= 0 ? null : price! / q * 100;
+  }
+
   Product({
     required this.barcode,
     required this.name,
@@ -153,8 +172,14 @@ class Ingredient {
   final String name;
   final String? code; // e.g. "E330" for additives
   final RiskLevel risk;
-  const Ingredient(this.name, this.risk, {this.code});
+
+  /// What an additive is used for, e.g. ["flavour enhancer"]. Empty if unknown.
+  final List<String> uses;
+  const Ingredient(this.name, this.risk, {this.code, this.uses = const []});
 }
+
+/// "en:sesame-seeds" -> "sesame seeds".
+String tagLabel(String tag) => tag.replaceFirst(RegExp(r'^[a-z]{2}:'), '').replaceAll('-', ' ');
 
 /// Colors assigned to products in the order they are added.
 const productPalette = [

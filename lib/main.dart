@@ -33,16 +33,23 @@
 //   services.dart        Open Food Facts lookup, ReviewProvider, ReviewAnalyzer
 //   compare_screen.dart  compare screen, best-overall score, nutrition/review widgets
 //   product_search.dart  search for a product by name
+//   product_sheet.dart   product details: price, similar products
+//   watchlist.dart       allergens / diet / nutrients the user watches
+//   saved.dart           saved comparisons, remembered prices, share text
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'compare_screen.dart';
 import 'models.dart';
 import 'product_search.dart';
+import 'product_sheet.dart';
+import 'saved.dart';
 import 'services.dart';
+import 'watchlist.dart';
 
 void main() => runApp(const NutriCompareApp());
 
@@ -193,8 +200,11 @@ class _MarkPainter extends CustomPainter {
 // Barcode scanner screen
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Rapid scan: the camera stays open and every new barcode goes to [onCode],
+/// which adds it to the basket and returns a status line and whether it was added.
 class ScannerScreen extends StatefulWidget {
-  const ScannerScreen({super.key});
+  final Future<(String, bool)> Function(String code) onCode;
+  const ScannerScreen({super.key, required this.onCode});
 
   @override
   State<ScannerScreen> createState() => _ScannerScreenState();
@@ -210,22 +220,37 @@ class _ScannerScreenState extends State<ScannerScreen> {
     ],
     detectionSpeed: DetectionSpeed.noDuplicates,
   );
-  bool _done = false;
+  bool _busy = false;
   bool _found = false;
+  String? _status;
+  int _added = 0;
+  final _seen = <String>{};
 
   static const _window = Size(290, 170);
 
-  void _onDetect(BarcodeCapture capture) {
-    if (_done) return;
+  Future<void> _onDetect(BarcodeCapture capture) async {
+    if (_busy) return;
     final code = capture.barcodes.map((b) => b.rawValue).whereType<String>().firstOrNull;
-    if (code == null || code.isEmpty) return;
-    _done = true;
+    if (code == null || code.isEmpty || _seen.contains(code)) return;
+    _busy = true;
+    _seen.add(code);
     HapticFeedback.mediumImpact();
-    // Flash the frame green briefly so the read is visible, then return.
-    setState(() => _found = true);
-    Future.delayed(const Duration(milliseconds: 250), () {
-      if (mounted) Navigator.of(context).pop(code);
+    setState(() {
+      _found = true;
+      _status = 'Looking up…';
     });
+    final (msg, added) = await widget.onCode(code);
+    if (!mounted) return;
+    if (!added) _seen.remove(code); // allow a retry after a network error
+    setState(() {
+      _status = msg;
+      if (added) _added++;
+    });
+    // Keep the green frame briefly so the read is visible, then scan the next pack.
+    await Future.delayed(const Duration(milliseconds: 600));
+    if (!mounted) return;
+    setState(() => _found = false);
+    _busy = false;
   }
 
   @override
@@ -243,7 +268,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
-        title: const Text('Scan a barcode', style: TextStyle(color: Colors.white)),
+        title: const Text('Rapid scan', style: TextStyle(color: Colors.white)),
         actions: [
           ValueListenableBuilder(
             valueListenable: _controller,
@@ -274,22 +299,37 @@ class _ScannerScreenState extends State<ScannerScreen> {
           Positioned(
             left: 24,
             right: 24,
-            bottom: 56,
-            child: Column(
-              children: [
-                Text(
-                  _found ? 'Got it' : 'Fit the barcode inside the frame',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
-                ),
-                const SizedBox(height: 4),
-                const Text(
-                  'Hold steady about a hand\'s width away',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white70),
-                ),
-              ],
+            bottom: 40,
+            child: SafeArea(
+              top: false,
+              child: Column(
+                children: [
+                  Text(
+                    _status ?? 'Fit the barcode inside the frame',
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Keep scanning: each pack goes straight into your basket',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white70),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: cream,
+                      foregroundColor: _spruce,
+                      minimumSize: const Size(200, 52),
+                    ),
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: Text(_added == 0 ? 'Done' : 'Done · $_added added'),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -443,18 +483,107 @@ class _HomeScreenState extends State<HomeScreen> {
   final ReviewProvider _reviews = NoReviewProvider();
   final List<Product> _items = [];
   bool _busy = false;
+  WatchList _watch = const WatchList();
+  Map<String, (double, double?)> _prices = {};
 
-  void _toast(String msg) {
+  /// Last barcode Open Food Facts didn't have, offered as "add it" in a toast.
+  String? _missing;
+
+  @override
+  void initState() {
+    super.initState();
+    WatchList.load().then((w) {
+      if (mounted) setState(() => _watch = w);
+    });
+    PriceStore.load().then((p) => _prices = p);
+  }
+
+  void _toast(String msg, {String? missingCode}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(msg)));
+      ..showSnackBar(SnackBar(
+        content: Text(msg),
+        action: missingCode == null
+            ? null
+            : SnackBarAction(label: 'Add it', onPressed: () => _addToOpenFoodFacts(missingCode)),
+      ));
+  }
+
+  /// Open Food Facts' own page for the barcode offers "Add a product".
+  Future<void> _addToOpenFoodFacts(String code) async {
+    final ok = await launchUrl(Uri.https('world.openfoodfacts.org', '/product/$code'),
+        mode: LaunchMode.externalApplication);
+    if (!ok) _toast('Could not open the browser.');
+  }
+
+  /// Adds a product and toasts the result.
+  Future<void> _addAndToast(String code) async {
+    final (msg, _) = await _addBarcode(code);
+    final missing = _missing;
+    _missing = null;
+    _toast(msg, missingCode: missing);
   }
 
   Future<void> _scan() async {
-    final code = await Navigator.of(context)
-        .push<String>(MaterialPageRoute(builder: (_) => const ScannerScreen()));
-    if (code != null) await _addBarcode(code);
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => ScannerScreen(onCode: _addBarcode)));
+    final missing = _missing;
+    _missing = null;
+    if (missing != null) {
+      _toast('$missing isn\'t in Open Food Facts yet.', missingCode: missing);
+    }
+  }
+
+  Future<void> _openWatchList() async {
+    final w = await Navigator.of(context)
+        .push<WatchList>(MaterialPageRoute(builder: (_) => WatchListScreen(initial: _watch)));
+    if (w != null && mounted) setState(() => _watch = w);
+  }
+
+  Future<void> _openSaved() async {
+    final c = await Navigator.of(context)
+        .push<SavedComparison>(MaterialPageRoute(builder: (_) => const SavedScreen()));
+    if (c == null || !mounted) return;
+    setState(_items.clear);
+    var loaded = 0;
+    for (final code in c.barcodes) {
+      final (_, added) = await _addBarcode(code);
+      if (added) loaded++;
+    }
+    _missing = null;
+    _toast('Loaded "${c.name}": $loaded of ${c.barcodes.length} products.');
+  }
+
+  Future<void> _editPrice(Product p) async {
+    final r = await askPrice(context, p);
+    if (r == null || !mounted) return;
+    final (price, grams) = r;
+    setState(() {
+      p.price = price;
+      if (grams != null) p.quantityGrams = grams;
+    });
+    if (price == null) {
+      _prices.remove(p.barcode);
+    } else {
+      _prices[p.barcode] = (price, grams);
+    }
+    await PriceStore.set(p.barcode, price, grams);
+  }
+
+  void _openProduct(Product p) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => ProductSheet(
+        product: p,
+        service: _off,
+        watch: _watch,
+        onAdd: _addAndToast,
+        onEditPrice: _editPrice,
+        inBasket: (code) => _items.any((i) => i.barcode == code),
+      ),
+    );
   }
 
   Future<void> _enterManually() async {
@@ -478,39 +607,49 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
-    if (code != null && code.isNotEmpty) await _addBarcode(code);
+    if (code != null && code.isNotEmpty) await _addAndToast(code);
   }
 
   Future<void> _bySearch() async {
     final code = await Navigator.of(context).push<String>(
       MaterialPageRoute(builder: (_) => const ProductSearchScreen()),
     );
-    if (code != null) await _addBarcode(code);
+    if (code != null) await _addAndToast(code);
   }
 
-  Future<void> _addBarcode(String code) async {
+  /// Looks the barcode up and adds it to the basket. Returns a short status
+  /// line and whether the product was added.
+  Future<(String, bool)> _addBarcode(String code) async {
     if (_items.any((p) => p.barcode == code)) {
-      _toast('That product is already added.');
-      return;
+      return ('That product is already added.', false);
     }
     setState(() => _busy = true);
     try {
       final p = await _off.lookup(code);
-      if (!mounted) return;
+      if (!mounted) return ('', false);
       if (p == null) {
-        _toast('Barcode $code is not a valid food product.');
-      } else {
-        p.color = productPalette[_items.length % productPalette.length];
-        try {
-          p.reviews = await _reviews.reviewsFor(p);
-        } catch (_) {
-          // Reviews are optional; nutrition still works without them.
-        }
-        if (!mounted) return;
-        setState(() => _items.add(p));
+        _missing = code;
+        return ('Barcode $code is not a valid food product.', false);
       }
+      p.color = productPalette[_items.length % productPalette.length];
+      if (_prices[code] case (final price, final grams)) {
+        p.price = price;
+        if (grams != null) p.quantityGrams = grams;
+      }
+      try {
+        p.reviews = await _reviews.reviewsFor(p);
+      } catch (_) {
+        // Reviews are optional; nutrition still works without them.
+      }
+      if (!mounted) return ('', false);
+      setState(() => _items.add(p));
+      final flags = watchFlags(p, _watch).where((f) => f.level != FlagLevel.unknown);
+      return (
+        flags.isEmpty ? 'Added ${p.name}' : 'Added ${p.name} · ${flags.first.text}',
+        true,
+      );
     } on LookupException catch (e) {
-      _toast(e.message);
+      return (e.message, false);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -536,7 +675,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _openCompare() {
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => CompareScreen(products: List.of(_items)),
+      builder: (_) => CompareScreen(products: List.of(_items), watch: _watch),
     ));
   }
 
@@ -553,6 +692,23 @@ class _HomeScreenState extends State<HomeScreen> {
             Text('Cassava'),
           ],
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.bookmarks_outlined),
+            tooltip: 'Saved comparisons',
+            onPressed: _busy ? null : _openSaved,
+          ),
+          IconButton(
+            icon: Badge(
+              isLabelVisible: !_watch.isEmpty,
+              smallSize: 8,
+              child: const Icon(Icons.health_and_safety_outlined),
+            ),
+            tooltip: 'My watch-list',
+            onPressed: _openWatchList,
+          ),
+          const SizedBox(width: 4),
+        ],
       ),
       bottomNavigationBar: _items.isEmpty
           ? null
@@ -616,7 +772,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Text('${_items.length}',
                     style: tt.titleMedium?.copyWith(color: cs.onSurfaceVariant)),
                 const Spacer(),
-                Text('Swipe to remove',
+                Text('Tap for details · swipe to remove',
                     style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
               ],
             ),
@@ -664,7 +820,24 @@ class _HomeScreenState extends State<HomeScreen> {
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(fontWeight: FontWeight.w600)),
-                        subtitle: Text(p.category, maxLines: 1, overflow: TextOverflow.ellipsis),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                                [
+                                  p.category,
+                                  if (p.pricePer100g case final v?) '${v.toStringAsFixed(2)} / 100 g',
+                                ].join(' · '),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis),
+                            if (watchFlags(p, _watch) case final flags when flags.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 6),
+                                child: WatchFlagChips(flags),
+                              ),
+                          ],
+                        ),
+                        onTap: () => _openProduct(p),
                         trailing: IconButton(
                           icon: const Icon(Icons.close),
                           tooltip: 'Remove ${p.name}',

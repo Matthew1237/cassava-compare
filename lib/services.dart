@@ -20,7 +20,8 @@ class LookupException implements Exception {
 class OpenFoodFactsService {
   static const _fields =
       'code,product_name,brands,categories,image_front_small_url,ingredients_text,'
-      'ingredients,additives_tags,nutriments,serving_quantity';
+      'ingredients,additives_tags,nutriments,serving_quantity,allergens_tags,traces_tags,'
+      'ingredients_analysis_tags,categories_tags,product_quantity';
 
   final AdditiveRiskService risks = AdditiveRiskService();
 
@@ -45,25 +46,6 @@ class OpenFoodFactsService {
     final json = jsonDecode(res.body) as Map<String, dynamic>;
     if (json['status'] != 1) return null;
     final p = json['product'] as Map<String, dynamic>;
-    final n = (p['nutriments'] as Map<String, dynamic>?) ?? {};
-
-    double? num_(dynamic v) => v is num ? v.toDouble() : double.tryParse('$v');
-
-    double? kcal = num_(n['energy-kcal_100g']);
-    kcal ??= num_(n['energy_100g']) == null ? null : num_(n['energy_100g'])! / 4.184;
-
-    // Sodium is reported in grams; fall back to salt (sodium = salt / 2.5).
-    double? sodiumMg;
-    final sodiumG = num_(n['sodium_100g']);
-    final saltG = num_(n['salt_100g']);
-    if (sodiumG != null) {
-      sodiumMg = sodiumG * 1000;
-    } else if (saltG != null) {
-      sodiumMg = saltG * 400;
-    }
-
-    // Cholesterol is reported in grams; the app shows mg.
-    final cholG = num_(n['cholesterol_100g']);
 
     String clean(dynamic v) => (v as String?)?.trim() ?? '';
     final name = clean(p['product_name']);
@@ -82,24 +64,111 @@ class OpenFoodFactsService {
       category: cats.isEmpty ? 'Food' : cats.split(',').last.trim(),
       imageUrl: p['image_front_small_url'] as String?,
       ingredients: clean(p['ingredients_text']).isEmpty ? null : clean(p['ingredients_text']),
-      nutrition: Nutrition(
-        calories: kcal,
-        sugar: num_(n['sugars_100g']),
-        fat: num_(n['fat_100g']),
-        cholesterol: cholG == null ? null : cholG * 1000,
-        sodium: sodiumMg,
-        carbs: num_(n['carbohydrates_100g']),
-        protein: num_(n['proteins_100g']),
-        servingGrams: num_(p['serving_quantity']),
-      ),
+      nutrition: nutritionFromOff(p['nutriments'], p['serving_quantity']),
     );
     product.ingredientItems = risks.buildIngredients(
       ingredients: p['ingredients'],
       additiveTags: p['additives_tags'],
       fallbackText: product.ingredients,
     );
+    List<String> tags(dynamic v) => v is List ? v.whereType<String>().toList() : <String>[];
+    product
+      ..allergens = tags(p['allergens_tags'])
+      ..traces = tags(p['traces_tags'])
+      ..analysis = tags(p['ingredients_analysis_tags'])
+      ..categoryTag = tags(p['categories_tags']).where((t) => t.startsWith('en:')).lastOrNull
+      ..quantityGrams = _num(p['product_quantity']);
     return product;
   }
+
+  /// Other products in the same category, most scanned first. Uses the
+  /// search.openfoodfacts.org service, which supports category queries.
+  Future<List<Product>> similar(Product of, {int limit = 12}) async {
+    final tag = of.categoryTag;
+    if (tag == null) return [];
+    final uri = Uri.https('search.openfoodfacts.org', '/search', {
+      'q': 'categories_tags:"$tag"',
+      'page_size': '${limit + 4}',
+      'sort_by': '-unique_scans_n',
+      'fields': 'code,product_name,brands,image_front_small_url,nutriments,serving_quantity',
+    });
+    final http.Response res;
+    try {
+      res = await http
+          .get(uri, headers: {'User-Agent': 'NutriCompare/1.0 (flutter app)'})
+          .timeout(const Duration(seconds: 15));
+    } on TimeoutException {
+      throw LookupException('The search timed out. Check your connection.');
+    } catch (_) {
+      throw LookupException('Could not reach the product database. Are you online?');
+    }
+    if (res.statusCode != 200) {
+      throw LookupException('Product search is unavailable right now (${res.statusCode}).');
+    }
+    return parseSimilar(jsonDecode(res.body), of, limit: limit);
+  }
+}
+
+/// Turns a search.openfoodfacts.org response into products, skipping [of]
+/// itself, duplicates and unnamed entries.
+List<Product> parseSimilar(dynamic json, Product of, {int limit = 12}) {
+  final hits = (json is Map ? json['hits'] : null) as List? ?? const [];
+  final out = <Product>[];
+  for (final h in hits.whereType<Map<String, dynamic>>()) {
+    final code = '${h['code'] ?? ''}';
+    final rawName = h['product_name'];
+    final name = (rawName is String ? rawName : '').trim();
+    if (code.isEmpty || name.isEmpty || code == of.barcode) continue;
+    if (out.any((o) => o.barcode == code)) continue;
+    final b = h['brands'];
+    final brand = (b is List ? b.whereType<String>().firstOrNull : b is String ? b.split(',').first : null)
+            ?.trim() ??
+        '';
+    out.add(Product(
+      barcode: code,
+      name: withBrand(brand, name),
+      brand: brand,
+      category: of.category,
+      imageUrl: h['image_front_small_url'] as String?,
+      nutrition: nutritionFromOff(h['nutriments'], h['serving_quantity']),
+    ));
+    if (out.length == limit) break;
+  }
+  return out;
+}
+
+double? _num(dynamic v) => v is num ? v.toDouble() : double.tryParse('$v');
+
+/// Reads Open Food Facts "nutriments" (per 100 g) into [Nutrition].
+Nutrition nutritionFromOff(dynamic nutriments, dynamic servingQuantity) {
+  final n = nutriments is Map ? nutriments : const {};
+
+  double? kcal = _num(n['energy-kcal_100g']);
+  kcal ??= _num(n['energy_100g']) == null ? null : _num(n['energy_100g'])! / 4.184;
+
+  // Sodium is reported in grams; fall back to salt (sodium = salt / 2.5).
+  double? sodiumMg;
+  final sodiumG = _num(n['sodium_100g']);
+  final saltG = _num(n['salt_100g']);
+  if (sodiumG != null) {
+    sodiumMg = sodiumG * 1000;
+  } else if (saltG != null) {
+    sodiumMg = saltG * 400;
+  }
+
+  // Cholesterol is reported in grams; the app shows mg.
+  final cholG = _num(n['cholesterol_100g']);
+
+  return Nutrition(
+    calories: kcal,
+    sugar: _num(n['sugars_100g']),
+    fat: _num(n['fat_100g']),
+    cholesterol: cholG == null ? null : cholG * 1000,
+    sodium: sodiumMg,
+    carbs: _num(n['carbohydrates_100g']),
+    protein: _num(n['proteins_100g']),
+    servingGrams: _num(servingQuantity),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,6 +184,7 @@ class AdditiveRiskService {
 
   final Map<String, RiskLevel?> _risk = {};
   final Map<String, String> _names = {};
+  final Map<String, List<String>> _uses = {};
   bool _loaded = false;
   Future<void>? _loading;
 
@@ -137,6 +207,8 @@ class AdditiveRiskService {
         final n = v['name'];
         final en = n is Map ? n['en'] : null;
         if (en is String && en.isNotEmpty) _names[e.key] = en;
+        final uses = additiveUses(v['additives_classes']);
+        if (uses.isNotEmpty) _uses[e.key] = uses;
       }
       _loaded = _risk.isNotEmpty;
     } catch (_) {
@@ -172,6 +244,16 @@ class AdditiveRiskService {
 
   static String _codeOf(String tag) => tag.replaceFirst('en:', '').toUpperCase();
 
+  /// {"en": "en:acidity-regulator,en:antioxidant"} -> ["acidity regulator", "antioxidant"].
+  static List<String> additiveUses(dynamic raw) {
+    final s = raw is Map ? raw['en'] : raw;
+    if (s is! String) return const [];
+    return [
+      for (final t in s.split(','))
+        if (t.trim().isNotEmpty) tagLabel(t.trim())
+    ];
+  }
+
   List<Ingredient> buildIngredients({
     required dynamic ingredients,
     required dynamic additiveTags,
@@ -188,7 +270,7 @@ class AdditiveRiskService {
       if (tag != null && _risk.containsKey(tag)) {
         seenTags.add(tag);
         out.add(Ingredient(label, _risk[tag] ?? RiskLevel.unclassified,
-            code: _codeOf(tag)));
+            code: _codeOf(tag), uses: _uses[tag] ?? const []));
       } else {
         out.add(Ingredient(label, RiskLevel.unclassified));
       }
@@ -222,7 +304,7 @@ class AdditiveRiskService {
         final name = _names[t] ?? _codeOf(t);
         if (seenNames.add(name.toLowerCase())) {
           out.add(Ingredient(name, _risk[t] ?? RiskLevel.unclassified,
-              code: _codeOf(t)));
+              code: _codeOf(t), uses: _uses[t] ?? const []));
         }
       }
     }
