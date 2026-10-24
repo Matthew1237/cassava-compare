@@ -251,7 +251,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final canCompare = _items.length >= 2 && !_busy;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('NutriCompare', style: TextStyle(fontWeight: FontWeight.w700)),
+        title: const Text('Cassava', style: TextStyle(fontWeight: FontWeight.w700)),
         centerTitle: false,
       ),
       floatingActionButton: FloatingActionButton.extended(
