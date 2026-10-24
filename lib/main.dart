@@ -36,6 +36,7 @@
 //   product_sheet.dart   product details: price, similar products
 //   watchlist.dart       allergens / diet / nutrients the user watches
 //   saved.dart           saved comparisons, remembered prices, share text
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -201,9 +202,10 @@ class _MarkPainter extends CustomPainter {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Rapid scan: the camera stays open and every new barcode goes to [onCode],
-/// which adds it to the basket and returns a status line and whether it was added.
+/// which adds it to the basket and returns a status line and the product
+/// that was added (null when nothing was added).
 class ScannerScreen extends StatefulWidget {
-  final Future<(String, bool)> Function(String code) onCode;
+  final Future<(String, Product?)> Function(String code) onCode;
   const ScannerScreen({super.key, required this.onCode});
 
   @override
@@ -220,135 +222,358 @@ class _ScannerScreenState extends State<ScannerScreen> {
     ],
     detectionSpeed: DetectionSpeed.noDuplicates,
   );
+  final _textPainter = TextPainter(textDirection: TextDirection.ltr);
   bool _busy = false;
   bool _found = false;
+  bool _zoomed = false;
+  bool _stuck = false;
   String? _status;
+  Product? _last;
   int _added = 0;
   final _seen = <String>{};
 
-  static const _window = Size(290, 170);
+  /// The barcode just read and the camera frame size, for the highlight.
+  (Barcode, Size)? _hit;
+  Timer? _hintTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _armHint();
+  }
+
+  /// Shows a tip if nothing has been read for a while.
+  void _armHint() {
+    _hintTimer?.cancel();
+    _hintTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted && !_busy) setState(() => _stuck = true);
+    });
+  }
 
   Future<void> _onDetect(BarcodeCapture capture) async {
     if (_busy) return;
-    final code = capture.barcodes.map((b) => b.rawValue).whereType<String>().firstOrNull;
-    if (code == null || code.isEmpty || _seen.contains(code)) return;
+    final barcode = capture.barcodes.where((b) => (b.rawValue ?? '').isNotEmpty).firstOrNull;
+    if (barcode == null || _seen.contains(barcode.rawValue)) return;
+    HapticFeedback.mediumImpact();
+    _hit = (barcode, capture.size);
+    await _handle(barcode.rawValue!);
+  }
+
+  Future<void> _handle(String code) async {
     _busy = true;
     _seen.add(code);
-    HapticFeedback.mediumImpact();
+    _hintTimer?.cancel();
     setState(() {
       _found = true;
-      _status = 'Looking up…';
+      _stuck = false;
+      _status = 'Looking up $code…';
     });
     final (msg, added) = await widget.onCode(code);
     if (!mounted) return;
-    if (!added) _seen.remove(code); // allow a retry after a network error
+    if (added == null) _seen.remove(code); // allow a retry after an error
     setState(() {
       _status = msg;
-      if (added) _added++;
+      if (added != null) {
+        _last = added;
+        _added++;
+      }
     });
-    // Keep the green frame briefly so the read is visible, then scan the next pack.
-    await Future.delayed(const Duration(milliseconds: 600));
+    // Keep the highlight briefly so the read is visible, then scan the next pack.
+    await Future.delayed(const Duration(milliseconds: 700));
     if (!mounted) return;
-    setState(() => _found = false);
+    setState(() {
+      _found = false;
+      _hit = null;
+    });
     _busy = false;
+    _armHint();
+  }
+
+  Future<void> _typeNumber() async {
+    final controller = TextEditingController();
+    final code = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Type the barcode number'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'e.g. 5449000000996'),
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              child: const Text('Add')),
+        ],
+      ),
+    );
+    if (code != null && code.isNotEmpty && !_busy) await _handle(code);
+  }
+
+  Future<void> _toggleZoom() async {
+    setState(() => _zoomed = !_zoomed);
+    await _controller.setZoomScale(_zoomed ? 0.4 : 0);
   }
 
   @override
   void dispose() {
+    _hintTimer?.cancel();
+    _textPainter.dispose();
     _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final frame = _found ? const Color(0xFF6BD49A) : cream;
     return Scaffold(
       backgroundColor: Colors.black,
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        foregroundColor: Colors.white,
-        title: const Text('Rapid scan', style: TextStyle(color: Colors.white)),
-        actions: [
-          ValueListenableBuilder(
-            valueListenable: _controller,
-            builder: (_, state, _) {
-              final on = state.torchState == TorchState.on;
-              return IconButton(
-                icon: Icon(on ? Icons.flashlight_on : Icons.flashlight_off_outlined),
-                color: on ? cream : Colors.white70,
-                tooltip: on ? 'Turn torch off' : 'Turn torch on',
-                onPressed: state.torchState == TorchState.unavailable
-                    ? null
-                    : () => _controller.toggleTorch(),
-              );
-            },
+      body: LayoutBuilder(builder: (context, box) {
+        // A wide window suits 1D barcodes; sit it above the tray, not dead centre.
+        final w = math.min(box.maxWidth - 48, 340.0);
+        final window = Rect.fromCenter(
+            center: Offset(box.maxWidth / 2, box.maxHeight * 0.38), width: w, height: w * 0.6);
+        final hit = _hit;
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            MobileScanner(
+              controller: _controller,
+              onDetect: _onDetect,
+              tapToFocus: true,
+              // Read only inside the window (with some slack), so the pack
+              // next to it on the shelf isn't scanned by accident.
+              scanWindow: window.inflate(24),
+              errorBuilder: (context, error) => _CameraError(error),
+            ),
+            CustomPaint(painter: _ViewfinderPainter(window, _found ? _readGreen : cream)),
+            if (hit != null && _found)
+              CustomPaint(
+                painter: BarcodePainter(
+                  barcodeCorners: hit.$1.corners,
+                  barcodeSize: hit.$1.size,
+                  barcodeValue: '',
+                  boxFit: BoxFit.cover,
+                  cameraPreviewSize: hit.$2,
+                  color: _readGreen,
+                  style: PaintingStyle.stroke,
+                  textPainter: _textPainter,
+                  deviceOrientation: _controller.value.deviceOrientation,
+                ),
+              ),
+            if (!_found)
+              Positioned.fromRect(
+                rect: window,
+                child: Center(child: _ScanLine(width: w - 40, travel: window.height - 40)),
+              ),
+            // Instruction just under the window.
+            Positioned(
+              left: 24,
+              right: 24,
+              top: window.bottom + 16,
+              child: Text(
+                _stuck
+                    ? 'Having trouble? Try the torch, move a little further away, or type the number.'
+                    : 'Fit the barcode inside the frame',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15),
+              ),
+            ),
+            Positioned(left: 0, right: 0, top: 0, child: _topBar(context)),
+            Positioned(left: 0, right: 0, bottom: 0, child: _tray(context)),
+          ],
+        );
+      }),
+    );
+  }
+
+  Widget _topBar(BuildContext context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 4, 16, 0),
+          child: Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white),
+                tooltip: 'Close scanner',
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+              const SizedBox(width: 4),
+              const Text('Scan products',
+                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700)),
+              const Spacer(),
+              if (_added > 0)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.45),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text('$_added added',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                ),
+            ],
           ),
-        ],
-      ),
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          MobileScanner(
-            controller: _controller,
-            onDetect: _onDetect,
-            errorBuilder: (context, error) => _CameraError(error),
+        ),
+      );
+
+  /// Thumb-reach controls above a card with the last product read.
+  Widget _tray(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final last = _last;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 16),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _RoundControl(
+                  icon: Icons.dialpad, label: 'Type number', onTap: _busy ? null : _typeNumber),
+              const SizedBox(width: 28),
+              ValueListenableBuilder(
+                valueListenable: _controller,
+                builder: (_, state, _) {
+                  final on = state.torchState == TorchState.on;
+                  return _RoundControl(
+                    icon: on ? Icons.flashlight_on : Icons.flashlight_off_outlined,
+                    label: on ? 'Torch on' : 'Torch',
+                    active: on,
+                    onTap: state.torchState == TorchState.unavailable
+                        ? null
+                        : () => _controller.toggleTorch(),
+                  );
+                },
+              ),
+              const SizedBox(width: 28),
+              _RoundControl(
+                icon: _zoomed ? Icons.zoom_out : Icons.zoom_in,
+                label: _zoomed ? 'Zoom out' : 'Zoom in',
+                active: _zoomed,
+                onTap: _toggleZoom,
+              ),
+            ],
           ),
-          CustomPaint(painter: _ViewfinderPainter(_window, frame)),
-          if (!_found) const Center(child: _ScanLine(width: 250, travel: 150)),
-          Positioned(
-            left: 24,
-            right: 24,
-            bottom: 40,
-            child: SafeArea(
-              top: false,
+        ),
+        Material(
+          color: cs.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
               child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    _status ?? 'Fit the barcode inside the frame',
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Keep scanning: each pack goes straight into your basket',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white70),
-                  ),
-                  const SizedBox(height: 16),
-                  FilledButton(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: cream,
-                      foregroundColor: _spruce,
-                      minimumSize: const Size(200, 52),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 200),
+                    child: Row(
+                      key: ValueKey('$_status${last?.barcode}'),
+                      children: [
+                        if (last != null)
+                          ProductThumb(last, size: 48)
+                        else
+                          Container(
+                            width: 48,
+                            height: 48,
+                            decoration: BoxDecoration(
+                              color: cs.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Icon(Icons.shopping_basket_outlined, color: cs.onSurfaceVariant),
+                          ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                last?.name ?? 'Nothing scanned yet',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                _status ?? 'Each pack you scan goes straight into your basket.',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: Text(_added == 0 ? 'Done' : 'Done · $_added added'),
+                  ),
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: Text(_added == 0 ? 'Done' : 'Done · $_added added'),
+                    ),
                   ),
                 ],
               ),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
+    );
+  }
+}
+
+const _readGreen = Color(0xFF6BD49A);
+
+/// A round camera control with a label underneath.
+class _RoundControl extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool active;
+  final VoidCallback? onTap;
+  const _RoundControl({required this.icon, required this.label, this.active = false, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Material(
+          color: active ? cream : Colors.black.withValues(alpha: 0.5),
+          shape: const CircleBorder(),
+          child: IconButton(
+            iconSize: 24,
+            padding: const EdgeInsets.all(14),
+            icon: Icon(icon, color: active ? _spruce : Colors.white),
+            tooltip: label,
+            onPressed: onTap,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(label,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                shadows: [Shadow(blurRadius: 4)])),
+      ],
     );
   }
 }
 
 /// Dims the camera everywhere except a rounded window with corner brackets.
 class _ViewfinderPainter extends CustomPainter {
-  final Size window;
+  final Rect window;
   final Color color;
   const _ViewfinderPainter(this.window, this.color);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final r = Rect.fromCenter(
-        center: size.center(Offset.zero), width: window.width, height: window.height);
-    final rr = RRect.fromRectAndRadius(r, const Radius.circular(18));
+    final r = window;
+    final rr = RRect.fromRectAndRadius(r, const Radius.circular(20));
     canvas.drawPath(
       Path.combine(PathOperation.difference, Path()..addRect(Offset.zero & size),
           Path()..addRRect(rr)),
@@ -359,7 +584,7 @@ class _ViewfinderPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 5
       ..strokeCap = StrokeCap.round;
-    const l = 30.0;
+    const l = 34.0;
     for (final (c, dx, dy) in [
       (r.topLeft, 1.0, 1.0),
       (r.topRight, -1.0, 1.0),
@@ -369,8 +594,8 @@ class _ViewfinderPainter extends CustomPainter {
       canvas.drawPath(
         Path()
           ..moveTo(c.dx, c.dy + dy * l)
-          ..lineTo(c.dx, c.dy + dy * 12)
-          ..quadraticBezierTo(c.dx, c.dy, c.dx + dx * 12, c.dy)
+          ..lineTo(c.dx, c.dy + dy * 14)
+          ..quadraticBezierTo(c.dx, c.dy, c.dx + dx * 14, c.dy)
           ..lineTo(c.dx + dx * l, c.dy),
         p,
       );
@@ -472,14 +697,16 @@ class _CameraError extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  /// Product database; tests pass a fake.
+  final OpenFoodFactsService? service;
+  const HomeScreen({super.key, this.service});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final _off = OpenFoodFactsService();
+  late final _off = widget.service ?? OpenFoodFactsService();
   final ReviewProvider _reviews = NoReviewProvider();
   final List<Product> _items = [];
   bool _busy = false;
@@ -526,7 +753,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _scan() async {
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => ScannerScreen(onCode: _addBarcode)));
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ScannerScreen(onCode: (code) async {
+        final (msg, added) = await _addBarcode(code);
+        return (msg, added ? _items.last : null);
+      }),
+    ));
     final missing = _missing;
     _missing = null;
     if (missing != null) {
@@ -544,6 +776,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final c = await Navigator.of(context)
         .push<SavedComparison>(MaterialPageRoute(builder: (_) => const SavedScreen()));
     if (c == null || !mounted) return;
+    final previous = List.of(_items); // offered back via Undo
     setState(_items.clear);
     var loaded = 0;
     for (final code in c.barcodes) {
@@ -551,7 +784,24 @@ class _HomeScreenState extends State<HomeScreen> {
       if (added) loaded++;
     }
     _missing = null;
-    _toast('Loaded "${c.name}": $loaded of ${c.barcodes.length} products.');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text('Loaded "${c.name}": $loaded of ${c.barcodes.length} products.'),
+        action: previous.isEmpty
+            ? null
+            : SnackBarAction(
+                label: 'Undo',
+                onPressed: () {
+                  if (mounted) {
+                    setState(() => _items
+                      ..clear()
+                      ..addAll(previous));
+                  }
+                },
+              ),
+      ));
   }
 
   Future<void> _editPrice(Product p) async {

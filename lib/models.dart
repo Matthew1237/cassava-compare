@@ -114,8 +114,9 @@ class Product {
   /// ingredients analysis ("en:non-vegan", "en:vegetarian"). Empty = unknown.
   List<String> allergens = [], traces = [], analysis = [];
 
-  /// Most specific English category tag, e.g. "en:colas". Finds similar products.
-  String? categoryTag;
+  /// Real English category tags, broad to specific ("en:spreads",
+  /// "en:sweet-spreads"). Used to find similar products.
+  List<String> categoryTags = [];
 
   /// Package size in g (or ml) from the database, or as the user corrected it.
   double? quantityGrams;

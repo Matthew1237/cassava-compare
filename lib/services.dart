@@ -21,7 +21,7 @@ class OpenFoodFactsService {
   static const _fields =
       'code,product_name,brands,categories,image_front_small_url,ingredients_text,'
       'ingredients,additives_tags,nutriments,serving_quantity,allergens_tags,traces_tags,'
-      'ingredients_analysis_tags,categories_tags,product_quantity';
+      'ingredients_analysis_tags,categories_tags,product_quantity,quantity';
 
   final AdditiveRiskService risks = AdditiveRiskService();
 
@@ -56,12 +56,20 @@ class OpenFoodFactsService {
       await risks.ensureLoaded();
     } catch (_) {}
 
+    List<String> tags(dynamic v) => v is List ? v.whereType<String>().toList() : <String>[];
+    final categoryTags = englishCategories(tags(p['categories_tags']));
+
     final brand = clean(p['brands']).split(',').first.trim();
     final product = Product(
       barcode: barcode,
       name: name.isEmpty ? 'Unnamed product ($barcode)' : withBrand(brand, name),
       brand: brand,
-      category: cats.isEmpty ? 'Food' : cats.split(',').last.trim(),
+      // The most specific real category reads best ("Colas", not "pt:bebidas cafeína").
+      category: categoryTags.isNotEmpty
+          ? _capitalize(tagLabel(categoryTags.last))
+          : cats.isEmpty
+              ? 'Food'
+              : cats.split(',').last.trim(),
       imageUrl: p['image_front_small_url'] as String?,
       ingredients: clean(p['ingredients_text']).isEmpty ? null : clean(p['ingredients_text']),
       nutrition: nutritionFromOff(p['nutriments'], p['serving_quantity']),
@@ -71,21 +79,31 @@ class OpenFoodFactsService {
       additiveTags: p['additives_tags'],
       fallbackText: product.ingredients,
     );
-    List<String> tags(dynamic v) => v is List ? v.whereType<String>().toList() : <String>[];
     product
       ..allergens = tags(p['allergens_tags'])
       ..traces = tags(p['traces_tags'])
       ..analysis = tags(p['ingredients_analysis_tags'])
-      ..categoryTag = tags(p['categories_tags']).where((t) => t.startsWith('en:')).lastOrNull
-      ..quantityGrams = _num(p['product_quantity']);
+      ..categoryTags = categoryTags
+      // OFF drops product_quantity unless "quantity" is also requested; read the
+      // text ("400 g") as a fallback.
+      ..quantityGrams = _num(p['product_quantity']) ?? _gramsFromText(clean(p['quantity']));
     return product;
   }
 
   /// Other products in the same category, most scanned first. Uses the
   /// search.openfoodfacts.org service, which supports category queries.
+  /// Some specific categories have no products in the search index, so it
+  /// widens to broader categories (up to 3 requests) until it finds some.
   Future<List<Product>> similar(Product of, {int limit = 12}) async {
-    final tag = of.categoryTag;
-    if (tag == null) return [];
+    var found = <Product>[];
+    for (final tag in of.categoryTags.reversed.take(3)) {
+      found = await _similarIn(tag, of, limit);
+      if (found.length >= 3) break;
+    }
+    return found;
+  }
+
+  Future<List<Product>> _similarIn(String tag, Product of, int limit) async {
     final uri = Uri.https('search.openfoodfacts.org', '/search', {
       'q': 'categories_tags:"$tag"',
       'page_size': '${limit + 4}',
@@ -138,6 +156,19 @@ List<Product> parseSimilar(dynamic json, Product of, {int limit = 12}) {
 }
 
 double? _num(dynamic v) => v is num ? v.toDouble() : double.tryParse('$v');
+
+/// "400 g" or "330 ml" -> 400 / 330. Null for other units or no number.
+double? _gramsFromText(String s) {
+  final m = RegExp(r'^(\d+(?:[.,]\d+)?)\s*(g|ml)', caseSensitive: false).firstMatch(s.trim());
+  return m == null ? null : double.tryParse(m.group(1)!.replaceAll(',', '.'));
+}
+
+String _capitalize(String s) => s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
+
+/// Category tags that are real taxonomy entries, in the order given (broad to
+/// specific). Free-text entries such as "en:Pâtes à tartiner" are left out.
+List<String> englishCategories(List<String> tags) =>
+    [for (final t in tags) if (RegExp(r'^en:[a-z0-9-]+$').hasMatch(t)) t];
 
 /// Reads Open Food Facts "nutriments" (per 100 g) into [Nutrition].
 Nutrition nutritionFromOff(dynamic nutriments, dynamic servingQuantity) {

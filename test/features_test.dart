@@ -30,6 +30,12 @@ class _FakeService extends OpenFoodFactsService {
   Future<List<Product>> similar(Product of, {int limit = 12}) async => items;
 }
 
+/// Looks every barcode up as "Product <code>".
+class _FakeLookup extends OpenFoodFactsService {
+  @override
+  Future<Product?> lookup(String barcode) async => _p(barcode, 'Product $barcode');
+}
+
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
@@ -81,7 +87,7 @@ void main() {
     });
 
     test('parses search results, skipping itself, duplicates and unnamed', () {
-      final of = _p('111', 'Cola')..categoryTag = 'en:colas';
+      final of = _p('111', 'Cola')..categoryTags = ['en:colas'];
       final json = {
         'hits': [
           {'code': '111', 'product_name': 'Cola'},
@@ -102,6 +108,17 @@ void main() {
       expect(out.first.nutrition.sodium, closeTo(40, 0.001)); // salt 0.1 g -> 40 mg sodium
       expect(out.last.brand, 'Brand X');
     });
+  });
+
+  test('only real category tags are used, free text is skipped', () {
+    expect(
+        englishCategories([
+          'en:spreads',
+          'en:sweet-spreads',
+          'en:Pâtes à tartiner',
+          'fr:Nutella',
+        ]),
+        ['en:spreads', 'en:sweet-spreads']);
   });
 
   test('additive uses from the taxonomy', () {
@@ -220,8 +237,63 @@ void main() {
       expect(find.textContaining('as high'), findsOneWidget);
     });
 
+    testWidgets('scanner: typed barcode lands in the tray and the counter', (t) async {
+      final codes = <String>[];
+      await t.pumpWidget(MaterialApp(
+        home: ScannerScreen(onCode: (code) async {
+          codes.add(code);
+          return ('Added Cola · Contains milk', _p(code, 'Cola'));
+        }),
+      ));
+      await t.pump();
+      expect(find.text('Nothing scanned yet'), findsOneWidget);
+
+      await t.tap(find.byTooltip('Type number'));
+      // The scan line animates forever, so advance time instead of settling.
+      await t.pump(const Duration(milliseconds: 500));
+      await t.enterText(find.byType(TextField), '5449000000996');
+      await t.tap(find.widgetWithText(FilledButton, 'Add'));
+      await t.pump(); // lookup runs
+      await t.pump(const Duration(milliseconds: 800)); // highlight time passes
+      expect(codes, ['5449000000996']);
+      expect(find.text('Cola'), findsOneWidget);
+      expect(find.text('Added Cola · Contains milk'), findsOneWidget);
+      expect(find.text('Done · 1 added'), findsOneWidget);
+      expect(find.text('1 added'), findsOneWidget);
+
+      // After 8 s without a read, a tip appears.
+      await t.pump(const Duration(seconds: 9));
+      expect(find.textContaining('Having trouble?'), findsOneWidget);
+    });
+
+    testWidgets('loading a saved comparison can be undone', (t) async {
+      await SavedStore.add(SavedComparison('Colas', ['2', '3'], DateTime(2026, 10, 24)));
+      await t.pumpWidget(MaterialApp(home: HomeScreen(service: _FakeLookup())));
+      await t.pumpAndSettle();
+
+      // Build a basket by hand first.
+      await t.tap(find.text('Type number'));
+      await t.pumpAndSettle();
+      await t.enterText(find.byType(TextField), '1');
+      await t.tap(find.text('Look up'));
+      await t.pumpAndSettle();
+      expect(find.text('Product 1'), findsOneWidget);
+
+      await t.tap(find.byTooltip('Saved comparisons'));
+      await t.pumpAndSettle();
+      await t.tap(find.text('Colas'));
+      await t.pumpAndSettle();
+      expect(find.text('Product 1'), findsNothing);
+      expect(find.text('Product 2'), findsOneWidget);
+
+      await t.tap(find.text('Undo'));
+      await t.pumpAndSettle();
+      expect(find.text('Product 1'), findsOneWidget);
+      expect(find.text('Product 2'), findsNothing);
+    });
+
     testWidgets('product sheet: similar products with differences, add one', (t) async {
-      final base = _p('1', 'Cola', sugar: 10, kcal: 42)..categoryTag = 'en:colas';
+      final base = _p('1', 'Cola', sugar: 10, kcal: 42)..categoryTags = ['en:colas'];
       final zero = _p('2', 'Cola Zero', sugar: 0, kcal: 1);
       final added = <String>[];
       await t.pumpWidget(MaterialApp(
