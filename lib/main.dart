@@ -1,4 +1,4 @@
-// NutriCompare — scan product barcodes and compare nutrition facts.
+// Cassava — scan product barcodes and compare nutrition facts.
 //
 // How it works
 // ------------
@@ -29,6 +29,8 @@
 //   models.dart          Metric, Nutrition, Review, Product, helpers
 //   services.dart        Open Food Facts lookup, ReviewProvider, ReviewAnalyzer
 //   compare_screen.dart  compare screen and its nutrition/review widgets
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -50,7 +52,7 @@ class NutriCompareApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'NutriCompare',
+      title: 'Cassava',
       debugShowCheckedModeBanner: false,
       theme: _theme(Brightness.light),
       darkTheme: _theme(Brightness.dark),
@@ -59,17 +61,20 @@ class NutriCompareApp extends StatelessWidget {
   }
 }
 
-/// Shelf-tag yellow: the one loud colour, reserved for the scan action.
-const shelfTag = Color(0xFFF5C84B);
+/// Brand colours, taken from the line-art logo: one green, one cream.
+const leaf = Color(0xFF2E7D6B);
+const cream = Color(0xFFF6EEDF);
 const _spruce = Color(0xFF17302A);
 
 ThemeData _theme(Brightness b) {
   final light = b == Brightness.light;
   final cs = ColorScheme.fromSeed(
-    seedColor: const Color(0xFF2E7D6B),
+    seedColor: leaf,
     brightness: b,
   ).copyWith(
-    surface: light ? const Color(0xFFF7F8F6) : null,
+    primary: light ? leaf : null,
+    surface: light ? const Color(0xFFF2F4F1) : null,
+    surfaceContainerLowest: light ? Colors.white : null,
     onSurface: light ? _spruce : null,
   );
   final base = ThemeData(useMaterial3: true, colorScheme: cs);
@@ -92,16 +97,18 @@ ThemeData _theme(Brightness b) {
       elevation: 0,
       color: cs.surfaceContainerLowest,
       margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
-        side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.6)),
-      ),
+      // Soft white cards on a tinted page instead of a border on everything.
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    ),
+    tabBarTheme: TabBarThemeData(
+      labelStyle: const TextStyle(fontWeight: FontWeight.w700),
+      dividerColor: cs.outlineVariant.withValues(alpha: 0.4),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
         minimumSize: const Size(0, 52),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+        textStyle: t.labelLarge?.copyWith(fontWeight: FontWeight.w700, fontSize: 15),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
@@ -109,7 +116,7 @@ ThemeData _theme(Brightness b) {
         minimumSize: const Size(0, 52),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         side: BorderSide(color: cs.outlineVariant),
-        textStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+        textStyle: t.labelLarge?.copyWith(fontWeight: FontWeight.w600, fontSize: 14),
       ),
     ),
     chipTheme: base.chipTheme.copyWith(
@@ -118,6 +125,64 @@ ThemeData _theme(Brightness b) {
     ),
     snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating),
   );
+}
+
+/// The line-art logo: a cassava leaf inside scanner corners, drawn in code.
+class CassavaMark extends StatelessWidget {
+  final double size;
+  final Color tile, line;
+  const CassavaMark({super.key, this.size = 32, this.tile = leaf, this.line = cream});
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        label: 'Cassava logo',
+        child: CustomPaint(size: Size.square(size), painter: _MarkPainter(tile, line)),
+      );
+}
+
+class _MarkPainter extends CustomPainter {
+  final Color tile, line;
+  const _MarkPainter(this.tile, this.line);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Drawn on the logo's 256-unit grid, then scaled.
+    canvas.scale(size.width / 256);
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(const Rect.fromLTWH(0, 0, 256, 256), const Radius.circular(58)),
+        Paint()..color = tile);
+    final p = Paint()
+      ..color = line
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 7
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(const Offset(128, 186), const Offset(128, 208), p);
+    for (final (deg, ry) in [(-60.0, 34.0), (-30.0, 42.0), (0.0, 48.0), (30.0, 42.0), (60.0, 34.0)]) {
+      canvas.save();
+      canvas.translate(128, 186);
+      canvas.rotate(deg * math.pi / 180);
+      canvas.drawOval(Rect.fromCenter(center: Offset(0, -ry - 4), width: 20, height: ry * 2), p);
+      canvas.restore();
+    }
+    for (final (x, y, dx, dy) in [
+      (44.0, 44.0, 1.0, 1.0),
+      (212.0, 44.0, -1.0, 1.0),
+      (44.0, 212.0, 1.0, -1.0),
+      (212.0, 212.0, -1.0, -1.0),
+    ]) {
+      canvas.drawPath(
+        Path()
+          ..moveTo(x, y + dy * 28)
+          ..lineTo(x, y + dy * 12)
+          ..quadraticBezierTo(x, y, x + dx * 12, y)
+          ..lineTo(x + dx * 28, y),
+        p,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_MarkPainter old) => old.tile != tile || old.line != line;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -167,7 +232,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final frame = _found ? const Color(0xFF6BD49A) : shelfTag;
+    final frame = _found ? const Color(0xFF6BD49A) : cream;
     return Scaffold(
       backgroundColor: Colors.black,
       extendBodyBehindAppBar: true,
@@ -182,7 +247,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
               final on = state.torchState == TorchState.on;
               return IconButton(
                 icon: Icon(on ? Icons.flashlight_on : Icons.flashlight_off_outlined),
-                color: on ? shelfTag : Colors.white,
+                color: on ? cream : Colors.white70,
                 tooltip: on ? 'Turn torch off' : 'Turn torch on',
                 onPressed: state.torchState == TorchState.unavailable
                     ? null
@@ -312,8 +377,8 @@ class _ScanLineState extends State<_ScanLine> with SingleTickerProviderStateMixi
         width: widget.width,
         height: 2,
         decoration: BoxDecoration(
-          color: shelfTag.withValues(alpha: 0.9),
-          boxShadow: [BoxShadow(color: shelfTag.withValues(alpha: 0.6), blurRadius: 8)],
+          color: cream.withValues(alpha: 0.9),
+          boxShadow: [BoxShadow(color: cream.withValues(alpha: 0.5), blurRadius: 8)],
         ),
       ),
     );
@@ -476,12 +541,20 @@ class _HomeScreenState extends State<HomeScreen> {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('NutriCompare')),
+      appBar: AppBar(
+        title: const Row(
+          children: [
+            CassavaMark(size: 30),
+            SizedBox(width: 10),
+            Text('Cassava'),
+          ],
+        ),
+      ),
       bottomNavigationBar: _items.isEmpty
           ? null
           : _CompareBar(products: _items, busy: _busy, onCompare: _openCompare),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
         children: [
           Text('Compare before you buy', style: tt.headlineSmall),
           const SizedBox(height: 6),
@@ -490,13 +563,13 @@ class _HomeScreenState extends State<HomeScreen> {
             'No scores — you decide.',
             style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 24),
           _ScanHero(onTap: _busy ? null : _scan),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
-                child: OutlinedButton.icon(
+                child: FilledButton.tonalIcon(
                   onPressed: _busy ? null : _enterManually,
                   icon: const Icon(Icons.dialpad),
                   label: const Text('Type number'),
@@ -504,7 +577,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: OutlinedButton.icon(
+                child: FilledButton.tonalIcon(
                   onPressed: _busy ? null : _byFrontLabel,
                   icon: const Icon(Icons.photo_camera_outlined),
                   label: const Text('Front label'),
@@ -528,7 +601,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
           ),
-          const SizedBox(height: 28),
+          const SizedBox(height: 32),
           if (_items.isEmpty)
             const _EmptyBasket()
           else ...[
@@ -543,13 +616,14 @@ class _HomeScreenState extends State<HomeScreen> {
                     style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
             Card(
               clipBehavior: Clip.antiAlias,
               child: Column(
                 children: [
                   for (final (i, p) in _items.indexed) ...[
-                    if (i > 0) Divider(height: 1, indent: 76, color: cs.outlineVariant),
+                    if (i > 0)
+                      Divider(height: 1, indent: 76, color: cs.outlineVariant.withValues(alpha: 0.5)),
                     Dismissible(
                       key: ValueKey(p.barcode),
                       direction: DismissDirection.endToStart,
@@ -599,7 +673,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ],
-          const SizedBox(height: 20),
+          const SizedBox(height: 24),
           Text(
             'Nutrition data from Open Food Facts. It is crowd-sourced and may be '
             'incomplete or out of date.',
@@ -611,7 +685,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// The primary action, styled like a yellow shelf price tag.
+/// The primary action, in the logo's green and cream.
 class _ScanHero extends StatelessWidget {
   final VoidCallback? onTap;
   const _ScanHero({required this.onTap});
@@ -621,41 +695,34 @@ class _ScanHero extends StatelessWidget {
     return Opacity(
       opacity: onTap == null ? 0.5 : 1,
       child: Material(
-        color: shelfTag,
+        color: leaf,
         borderRadius: BorderRadius.circular(24),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(20),
+          child: const Padding(
+            padding: EdgeInsets.all(20),
             child: Row(
               children: [
-                Container(
-                  width: 56,
-                  height: 56,
-                  decoration: BoxDecoration(
-                    color: _spruce,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: const Icon(Icons.qr_code_scanner, color: shelfTag, size: 30),
-                ),
-                const SizedBox(width: 16),
-                const Expanded(
+                CassavaMark(size: 60, tile: _spruce),
+                SizedBox(width: 16),
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text('Scan a barcode',
                           style: TextStyle(
-                              color: _spruce,
+                              color: cream,
                               fontSize: 20,
                               fontWeight: FontWeight.w800,
                               letterSpacing: -0.4)),
-                      SizedBox(height: 2),
+                      SizedBox(height: 4),
                       Text('Point your camera at the stripes on the pack',
-                          style: TextStyle(color: Color(0xCC17302A))),
+                          style: TextStyle(color: Color(0xD9F6EEDF))),
                     ],
                   ),
                 ),
+                Icon(Icons.chevron_right, color: cream),
               ],
             ),
           ),
@@ -675,8 +742,8 @@ class _EmptyBasket extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
       decoration: BoxDecoration(
+        color: cs.surfaceContainerLowest,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: cs.outlineVariant),
       ),
       child: Column(
         children: [

@@ -1,4 +1,4 @@
-// Compare screen: nutrition tab, critical-reviews tab, and their widgets.
+// Compare screen: nutrition, ingredients and reviews tabs, and their widgets.
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -29,49 +29,62 @@ class _CompareScreenState extends State<CompareScreen> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Scaffold(
         appBar: AppBar(
           title: Text('Comparing ${widget.products.length} products'),
           bottom: const TabBar(tabs: [
-            Tab(icon: Icon(Icons.bar_chart), text: 'Nutrition'),
-            Tab(icon: Icon(Icons.report_gmailerrorred_outlined), text: 'Critical reviews'),
+            Tab(text: 'Nutrition'),
+            Tab(text: 'Ingredients'),
+            Tab(text: 'Reviews'),
           ]),
         ),
         body: TabBarView(children: [
           _buildNutritionTab(context),
+          _buildIngredientsTab(context),
           _buildReviewsTab(context),
         ]),
       ),
     );
   }
 
+  /// Chips to hide or show products; shared by the nutrition and ingredients tabs.
+  Widget _productFilter(List<Product> visible) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 4,
+      children: [
+        for (final p in widget.products)
+          FilterChip(
+            showCheckmark: false,
+            avatar: CircleAvatar(backgroundColor: p.color, radius: 6),
+            label: Text(p.name, overflow: TextOverflow.ellipsis),
+            selected: !_hidden.contains(p.id),
+            selectedColor: p.color.withValues(alpha: 0.22),
+            onSelected: (sel) => setState(() {
+              if (sel) {
+                _hidden.remove(p.id);
+              } else if (visible.length > 1) {
+                _hidden.add(p.id);
+              }
+            }),
+          ),
+      ],
+    );
+  }
+
+  Widget _sectionTitle(BuildContext context, String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 24, 4, 10),
+        child: Text(text, style: Theme.of(context).textTheme.titleMedium),
+      );
+
   Widget _buildNutritionTab(BuildContext context) {
     final visible = _visible;
     final missingServing = visible.any((p) => p.nutrition.servingGrams == null);
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
       children: [
-        Wrap(
-          spacing: 8,
-          runSpacing: 4,
-          children: [
-            for (final p in widget.products)
-              FilterChip(
-                avatar: CircleAvatar(backgroundColor: p.color, radius: 6),
-                label: Text(p.name, overflow: TextOverflow.ellipsis),
-                selected: !_hidden.contains(p.id),
-                selectedColor: p.color.withValues(alpha: 0.22),
-                onSelected: (sel) => setState(() {
-                  if (sel) {
-                    _hidden.remove(p.id);
-                  } else if (visible.length > 1) {
-                    _hidden.add(p.id);
-                  }
-                }),
-              ),
-          ],
-        ),
+        _productFilter(visible),
         const SizedBox(height: 12),
         SizedBox(
           width: double.infinity,
@@ -93,15 +106,34 @@ class _CompareScreenState extends State<CompareScreen> {
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ),
-        const SizedBox(height: 14),
+        _sectionTitle(context, 'At a glance'),
+        _SideBySideTable(products: visible, perServing: _perServing),
+        _sectionTitle(context, 'By nutrient'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 10),
+          child: Text('Tap a product to compare it with a daily reference.',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        ),
         for (final m in Metric.values)
           _MetricCard(metric: m, products: visible, perServing: _perServing),
-        const SizedBox(height: 4),
-        const SizedBox(height: 6),
-        _SideBySideTable(products: visible, perServing: _perServing),
-        const SizedBox(height: 12),
+        const SizedBox(height: 14),
+        const _NeutralityNote(),
+      ],
+    );
+  }
+
+  Widget _buildIngredientsTab(BuildContext context) {
+    final visible = _visible;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+      children: [
+        _productFilter(visible),
+        const SizedBox(height: 16),
         _IngredientsCard(products: visible),
-        const SizedBox(height: 12),
+        const SizedBox(height: 14),
         const _NeutralityNote(),
       ],
     );
@@ -385,15 +417,6 @@ class _MetricCardState extends State<_MetricCard> {
                   ),
                 ),
               ),
-            if (_selected == null)
-              Padding(
-                padding: const EdgeInsets.only(top: 4, left: 4),
-                child: Text('Tap a product to compare it with a daily reference.',
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(color: cs.onSurfaceVariant)),
-              ),
             AnimatedSize(
               duration: const Duration(milliseconds: 200),
               child: selected.isEmpty
@@ -438,16 +461,12 @@ class _SideBySideTable extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Side by side',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 8),
-            SingleChildScrollView(
+            LayoutBuilder(builder: (context, box) => SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Table(
-                defaultColumnWidth: const FixedColumnWidth(94),
+                // Fill the card when the columns fit; scroll sideways when they don't.
+                defaultColumnWidth: FixedColumnWidth(
+                    math.max(80, (box.maxWidth - 92) / math.max(1, products.length))),
                 columnWidths: const {0: FixedColumnWidth(92)},
                 defaultVerticalAlignment: TableCellVerticalAlignment.middle,
                 border: TableBorder(
@@ -501,7 +520,7 @@ class _SideBySideTable extends StatelessWidget {
                   ]),
                 ],
               ),
-            ),
+            )),
           ],
         ),
       ),
@@ -529,12 +548,6 @@ class _IngredientsCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Ingredients',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 2),
             Text('Tap a product to see which ingredients fall in each group.',
                 style: Theme.of(context)
                     .textTheme
