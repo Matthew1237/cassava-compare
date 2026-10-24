@@ -20,15 +20,19 @@
 // returns nothing, and the Reviews tab says so. Plug in a licensed review
 // API there if you have one.
 //
-// Design principle: the app NEVER scores or ranks products. It shows facts
-// and differences, and the user decides.
+// Design principle: the app shows facts and differences and leaves the
+// decision to the user. The one exception is the "Best overall choice" card
+// on the compare screen: a relative score (low sugar, fat and cholesterol,
+// high protein, few risk-classified ingredients) that is only meaningful
+// within the group of products being compared, with a per-factor breakdown.
 //
 // File layout
 // -----------
 //   main.dart            app shell, scanner screen, home screen
 //   models.dart          Metric, Nutrition, Review, Product, helpers
 //   services.dart        Open Food Facts lookup, ReviewProvider, ReviewAnalyzer
-//   compare_screen.dart  compare screen and its nutrition/review widgets
+//   compare_screen.dart  compare screen, best-overall score, nutrition/review widgets
+//   product_search.dart  search for a product by name
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -36,8 +40,8 @@ import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'compare_screen.dart';
-import 'front_label.dart';
 import 'models.dart';
+import 'product_search.dart';
 import 'services.dart';
 
 void main() => runApp(const NutriCompareApp());
@@ -477,9 +481,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (code != null && code.isNotEmpty) await _addBarcode(code);
   }
 
-  Future<void> _byFrontLabel() async {
+  Future<void> _bySearch() async {
     final code = await Navigator.of(context).push<String>(
-      MaterialPageRoute(builder: (_) => FrontLabelScreen(service: _off)),
+      MaterialPageRoute(builder: (_) => const ProductSearchScreen()),
     );
     if (code != null) await _addBarcode(code);
   }
@@ -559,8 +563,8 @@ class _HomeScreenState extends State<HomeScreen> {
           Text('Compare before you buy', style: tt.headlineSmall),
           const SizedBox(height: 6),
           Text(
-            'Scan two or more products to see their nutrition side by side. '
-            'No scores — you decide.',
+            'Scan two or more products to see their nutrition side by side, '
+            'with a best overall pick you can check against the details.',
             style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
           ),
           const SizedBox(height: 24),
@@ -578,9 +582,9 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(width: 10),
               Expanded(
                 child: FilledButton.tonalIcon(
-                  onPressed: _busy ? null : _byFrontLabel,
-                  icon: const Icon(Icons.photo_camera_outlined),
-                  label: const Text('Front label'),
+                  onPressed: _busy ? null : _bySearch,
+                  icon: const Icon(Icons.search),
+                  label: const Text('Search'),
                 ),
               ),
             ],

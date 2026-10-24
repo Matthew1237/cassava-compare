@@ -23,6 +23,17 @@ class _CompareScreenState extends State<CompareScreen> {
   bool _perServing = false;
   String? _themeFilter;
 
+  /// The nutrient shown in the "By nutrient" graph.
+  Metric _metric = Metric.calories;
+  static const _tabMetrics = [
+    Metric.calories,
+    Metric.fat,
+    Metric.cholesterol,
+    Metric.sodium,
+    Metric.carbs,
+    Metric.protein,
+  ];
+
   List<Product> get _visible =>
       widget.products.where((p) => !_hidden.contains(p.id)).toList();
 
@@ -81,6 +92,7 @@ class _CompareScreenState extends State<CompareScreen> {
   Widget _buildNutritionTab(BuildContext context) {
     final visible = _visible;
     final missingServing = visible.any((p) => p.nutrition.servingGrams == null);
+    final cs = Theme.of(context).colorScheme;
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
       children: [
@@ -106,19 +118,44 @@ class _CompareScreenState extends State<CompareScreen> {
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ),
-        _sectionTitle(context, 'At a glance'),
-        _SideBySideTable(products: visible, perServing: _perServing),
+        const SizedBox(height: 20),
+        _BestOverallCard(products: visible, perServing: _perServing),
         _sectionTitle(context, 'By nutrient'),
+        SizedBox(
+          height: 44,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            children: [
+              for (final m in _tabMetrics)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    showCheckmark: false,
+                    avatar: Icon(m.icon, size: 16),
+                    label: Text(m.label),
+                    selected: _metric == m,
+                    onSelected: (_) => setState(() => _metric = m),
+                  ),
+                ),
+            ],
+          ),
+        ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(4, 0, 4, 10),
+          padding: const EdgeInsets.fromLTRB(4, 6, 4, 10),
           child: Text('Tap a product to compare it with a daily reference.',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
-                  ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                  ?.copyWith(color: cs.onSurfaceVariant)),
         ),
-        for (final m in Metric.values)
-          _MetricCard(metric: m, products: visible, perServing: _perServing),
+        _MetricCard(
+          key: ValueKey(_metric), // restarts the bar animation on each tab
+          metric: _metric,
+          products: visible,
+          perServing: _perServing,
+        ),
+        _sectionTitle(context, 'Side by side'),
+        _SideBySideTable(products: visible, perServing: _perServing),
         const SizedBox(height: 14),
         const _NeutralityNote(),
       ],
@@ -296,12 +333,233 @@ const _tabular = [FontFeature.tabularFigures()];
 
 double _maxOf(Iterable<double?> vs) => vs.whereType<double>().fold<double>(0, math.max);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Best overall choice
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _Factor {
+  final String label;
+  final bool higherIsBetter;
+  final double? Function(Product p, bool perServing) value;
+  const _Factor(this.label, this.higherIsBetter, this.value);
+}
+
+/// Weighted count of classified ingredients: high risk = 3, limited risk = 2,
+/// very low risk = 1. Unclassified ingredients count 0.
+/// Null when the product has no ingredient data.
+double? _riskLoad(Product p) => p.ingredientItems.isEmpty
+    ? null
+    : (p.countRisk(RiskLevel.high) * 3 +
+            p.countRisk(RiskLevel.limited) * 2 +
+            p.countRisk(RiskLevel.veryLow))
+        .toDouble();
+
+final _factors = <_Factor>[
+  _Factor('Low sugar', false, (p, s) => p.nutrition.value(Metric.sugar, perServing: s)),
+  _Factor('Low fat', false, (p, s) => p.nutrition.value(Metric.fat, perServing: s)),
+  _Factor('Low cholesterol', false,
+      (p, s) => p.nutrition.value(Metric.cholesterol, perServing: s)),
+  _Factor('High protein', true, (p, s) => p.nutrition.value(Metric.protein, perServing: s)),
+  _Factor('Few risky ingredients', false, (p, s) => _riskLoad(p)),
+];
+
+class OverallScore {
+  final Product product;
+  final double? score; // 0..1, null when no factor had data
+  final Map<String, double?> parts; // per factor, 0..1, null = skipped
+  final int used;
+  OverallScore(this.product, this.score, this.parts, this.used);
+}
+
+/// Each factor is scaled against the highest value in the group, so every
+/// part is 0..1 (1 = best in the group). "Low" factors are flipped
+/// (1 - value/max). The overall score is the plain average of the parts.
+///
+/// A factor is skipped for everyone when fewer than two products have data
+/// for it, or when the highest value is 0 (it can't tell products apart).
+/// A product with missing data is averaged over the factors it does have.
+List<OverallScore> computeOverall(List<Product> ps, {required bool perServing}) {
+  final parts = {for (final p in ps) p.id: <String, double?>{}};
+  for (final f in _factors) {
+    final vals = {for (final p in ps) p.id: f.value(p, perServing)};
+    final known = vals.values.whereType<double>().length;
+    final maxV = _maxOf(vals.values);
+    for (final p in ps) {
+      final v = vals[p.id];
+      parts[p.id]![f.label] = (v == null || known < 2 || maxV == 0)
+          ? null
+          : (f.higherIsBetter ? v / maxV : 1 - v / maxV);
+    }
+  }
+  final out = <OverallScore>[];
+  for (final p in ps) {
+    final m = parts[p.id]!;
+    final used = m.values.whereType<double>().toList();
+    final score = used.isEmpty ? null : used.reduce((a, b) => a + b) / used.length;
+    out.add(OverallScore(p, score, m, used.length));
+  }
+  out.sort((a, b) => (b.score ?? -1).compareTo(a.score ?? -1));
+  return out;
+}
+
+class _BestOverallCard extends StatelessWidget {
+  final List<Product> products;
+  final bool perServing;
+  const _BestOverallCard({required this.products, required this.perServing});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final scores = products.length < 2
+        ? <OverallScore>[]
+        : computeOverall(products, perServing: perServing);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(Icons.emoji_events_outlined, color: cs.primary),
+              const SizedBox(width: 8),
+              Text('Best overall choice',
+                  style: Theme.of(context).textTheme.titleMedium),
+            ]),
+            const SizedBox(height: 2),
+            Text(
+              'Low sugar, low fat, low cholesterol, high protein and few '
+              'risk-classified ingredients (high counts most), each scaled to '
+              'the best and worst in this group.',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: cs.onSurfaceVariant),
+            ),
+            if (scores.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text('Select at least two products to compare.',
+                    style: TextStyle(color: cs.onSurfaceVariant)),
+              )
+            else
+              for (var i = 0; i < scores.length; i++) _row(context, scores[i], i == 0),
+            const SizedBox(height: 8),
+            Text(
+              'Scores are relative to the products you are comparing, not an '
+              'absolute health rating. All five factors count equally, and '
+              'missing data is skipped. Ingredient risk counts high = 3, '
+              'limited = 2, very low = 1.',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: cs.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _row(BuildContext context, OverallScore s, bool best) {
+    final cs = Theme.of(context).colorScheme;
+    final p = s.product;
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: best ? p.color.withValues(alpha: 0.12) : null,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+            color: best ? p.color : cs.outlineVariant, width: best ? 1.5 : 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            CircleAvatar(backgroundColor: p.color, radius: 6),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(p.name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+            ),
+            if (best && s.score != null)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Text('Best',
+                    style: TextStyle(
+                        color: cs.primary, fontWeight: FontWeight.w700, fontSize: 12)),
+              ),
+            Text(s.score == null ? 'n/a' : '${(s.score! * 100).round()}%',
+                style: const TextStyle(fontWeight: FontWeight.w700, fontFeatures: _tabular)),
+          ]),
+          const SizedBox(height: 8),
+          TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: s.score ?? 0),
+            duration: const Duration(milliseconds: 600),
+            curve: Curves.easeOutCubic,
+            builder: (_, v, _) => ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                value: v,
+                minHeight: 10,
+                color: p.color,
+                backgroundColor: cs.surfaceContainerHighest,
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: -4,
+            children: [
+              for (final f in _factors)
+                Chip(
+                  label: Text(
+                    '${f.label} ${_pct(s.parts[f.label])}',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  backgroundColor: p.color.withValues(alpha: 0.12),
+                  side: BorderSide.none,
+                ),
+            ],
+          ),
+          if (s.used < _factors.length)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                s.score == null
+                    ? 'Not enough data in the database to score this product.'
+                    : 'Based on ${s.used} of ${_factors.length} factors (others had no data).',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _pct(double? v) => v == null ? '–' : '${(v * 100).round()}%';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Metric graph (one nutrient at a time)
+// ─────────────────────────────────────────────────────────────────────────────
+
 class _MetricCard extends StatefulWidget {
   final Metric metric;
   final List<Product> products;
   final bool perServing;
   const _MetricCard(
-      {required this.metric, required this.products, required this.perServing});
+      {super.key,
+      required this.metric,
+      required this.products,
+      required this.perServing});
 
   @override
   State<_MetricCard> createState() => _MetricCardState();
@@ -452,6 +710,8 @@ class _SideBySideTable extends StatelessWidget {
   final bool perServing;
   const _SideBySideTable({required this.products, required this.perServing});
 
+  static const _labelWidth = 112.0;
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -465,9 +725,9 @@ class _SideBySideTable extends StatelessWidget {
               scrollDirection: Axis.horizontal,
               child: Table(
                 // Fill the card when the columns fit; scroll sideways when they don't.
-                defaultColumnWidth: FixedColumnWidth(
-                    math.max(80, (box.maxWidth - 92) / math.max(1, products.length))),
-                columnWidths: const {0: FixedColumnWidth(92)},
+                defaultColumnWidth: FixedColumnWidth(math.max(
+                    80, (box.maxWidth - _labelWidth) / math.max(1, products.length))),
+                columnWidths: const {0: FixedColumnWidth(_labelWidth)},
                 defaultVerticalAlignment: TableCellVerticalAlignment.middle,
                 border: TableBorder(
                   horizontalInside:
@@ -821,8 +1081,9 @@ class _NeutralityNote extends StatelessWidget {
           const SizedBox(width: 10),
           const Expanded(
             child: Text(
-              'No scores, no rankings. Which trade-offs matter depends on your needs — '
-              'you decide what fits.',
+              'The overall score is relative to this group and weighs five factors '
+              'equally. Which trade-offs matter depends on your needs, so you decide '
+              'what fits.',
               style: TextStyle(fontSize: 13),
             ),
           ),

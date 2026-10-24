@@ -62,6 +62,9 @@ class OpenFoodFactsService {
       sodiumMg = saltG * 400;
     }
 
+    // Cholesterol is reported in grams; the app shows mg.
+    final cholG = num_(n['cholesterol_100g']);
+
     String clean(dynamic v) => (v as String?)?.trim() ?? '';
     final name = clean(p['product_name']);
     final cats = clean(p['categories']);
@@ -83,7 +86,10 @@ class OpenFoodFactsService {
         calories: kcal,
         sugar: num_(n['sugars_100g']),
         fat: num_(n['fat_100g']),
+        cholesterol: cholG == null ? null : cholG * 1000,
         sodium: sodiumMg,
+        carbs: num_(n['carbohydrates_100g']),
+        protein: num_(n['proteins_100g']),
         servingGrams: num_(p['serving_quantity']),
       ),
     );

@@ -1,28 +1,37 @@
 // Data models and small shared helpers/widgets.
 import 'package:flutter/material.dart';
 
-enum Metric { calories, sugar, fat, sodium }
+enum Metric { calories, sugar, fat, cholesterol, sodium, carbs, protein }
 
 extension MetricInfo on Metric {
   String get label => switch (this) {
         Metric.calories => 'Calories',
         Metric.sugar => 'Sugar',
-        Metric.fat => 'Fat',
+        Metric.fat => 'Total fat',
+        Metric.cholesterol => 'Cholesterol',
         Metric.sodium => 'Sodium',
+        Metric.carbs => 'Carbohydrates',
+        Metric.protein => 'Protein',
       };
 
   String get unit => switch (this) {
         Metric.calories => 'kcal',
         Metric.sugar => 'g',
         Metric.fat => 'g',
+        Metric.cholesterol => 'mg',
         Metric.sodium => 'mg',
+        Metric.carbs => 'g',
+        Metric.protein => 'g',
       };
 
   IconData get icon => switch (this) {
         Metric.calories => Icons.local_fire_department_outlined,
         Metric.sugar => Icons.cookie_outlined,
         Metric.fat => Icons.opacity_outlined,
+        Metric.cholesterol => Icons.water_drop_outlined,
         Metric.sodium => Icons.grain,
+        Metric.carbs => Icons.bakery_dining_outlined,
+        Metric.protein => Icons.fitness_center,
       };
 
   /// General daily reference amounts (adult, 2,000 kcal diet). Shown only as
@@ -31,20 +40,26 @@ extension MetricInfo on Metric {
         Metric.calories => 2000,
         Metric.sugar => 50,
         Metric.fat => 78,
+        Metric.cholesterol => 300,
         Metric.sodium => 2300,
+        Metric.carbs => 275,
+        Metric.protein => 50,
       };
 }
 
 class Nutrition {
   /// Values per 100 g. Null = not available in the database.
-  final double? calories, sugar, fat, sodium;
+  final double? calories, sugar, fat, cholesterol, sodium, carbs, protein;
   final double? servingGrams;
 
   const Nutrition({
     this.calories,
     this.sugar,
     this.fat,
+    this.cholesterol,
     this.sodium,
+    this.carbs,
+    this.protein,
     this.servingGrams,
   });
 
@@ -52,7 +67,10 @@ class Nutrition {
         Metric.calories => calories,
         Metric.sugar => sugar,
         Metric.fat => fat,
+        Metric.cholesterol => cholesterol,
         Metric.sodium => sodium,
+        Metric.carbs => carbs,
+        Metric.protein => protein,
       };
 
   double? value(Metric m, {required bool perServing}) {
