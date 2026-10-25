@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:my_app/compare_screen.dart';
 import 'package:my_app/main.dart';
 import 'package:my_app/models.dart';
+import 'package:my_app/preferences.dart';
 import 'package:my_app/product_sheet.dart';
 import 'package:my_app/saved.dart';
 import 'package:my_app/services.dart';
@@ -127,6 +128,59 @@ void main() {
     expect(AdditiveRiskService.additiveUses({'en': 'en:acidity-regulator,en:antioxidant'}),
         ['acidity regulator', 'antioxidant']);
     expect(AdditiveRiskService.additiveUses(null), isEmpty);
+  });
+
+  group('watch-list in the best-overall ranking', () {
+    // Only sugar and sodium have data, so only those factors can count.
+    Product snack(String code, double sugar, double sodium) => Product(
+          barcode: code,
+          name: 'Snack $code',
+          brand: '',
+          category: '',
+          ingredients: 'x',
+          nutrition: Nutrition(sugar: sugar, sodium: sodium),
+        );
+
+    test('a product with a watched allergen is ranked last and is never best', () {
+      final healthy = snack('A', 1, 100)..allergens = ['en:milk'];
+      final other = snack('B', 9, 900);
+      final out = computeOverall([healthy, other],
+          perServing: false, watch: const WatchList(allergens: {'en:milk'}));
+      expect(out.map((s) => s.product.barcode), ['B', 'A']);
+      expect(out.last.conflicts.single.text, 'Contains milk');
+    });
+
+    test('a watched nutrient counts, and counts double', () {
+      final lowSugar = snack('A', 5, 800);
+      final lowSodium = snack('B', 10, 200);
+      // Sodium is not a factor by default: only sugar decides.
+      expect(computeOverall([lowSugar, lowSodium], perServing: false).first.product.barcode,
+          'A');
+      // Watching sodium adds it as a factor with double weight.
+      final watched = computeOverall([lowSugar, lowSodium],
+          perServing: false, watch: const WatchList(nutrients: [Metric.sodium]));
+      expect(watched.first.product.barcode, 'B');
+      expect(watched.first.parts['Low sodium'], closeTo(0.75, 1e-9));
+      expect(watched.first.score, closeTo(0.75 * 2 / 3, 1e-9)); // sugar 0 × 1, sodium 0.75 × 2
+    });
+
+    test('"may contain" lowers the score by 10%', () {
+      final a = snack('A', 5, 0)..traces = ['en:peanuts'];
+      final b = snack('B', 10, 0);
+      final out = computeOverall([a, b],
+          perServing: false, watch: const WatchList(allergens: {'en:peanuts'}));
+      expect(out.first.product.barcode, 'A');
+      expect(out.first.score, closeTo(0.5 * 0.9, 1e-9));
+      expect(out.first.traces.single.text, 'May contain peanuts');
+    });
+
+    test('Ignore in Preferences still wins over a watched nutrient', () {
+      final out = computeOverall([snack('A', 5, 800), snack('B', 10, 200)],
+          perServing: false,
+          prefs: const Preferences({'Low sodium': 0}),
+          watch: const WatchList(nutrients: [Metric.sodium]));
+      expect(out.first.product.barcode, 'A');
+    });
   });
 
   group('prices and saving', () {

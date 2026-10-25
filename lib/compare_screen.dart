@@ -188,7 +188,10 @@ class _CompareScreenState extends State<CompareScreen> {
         ],
         const SizedBox(height: 20),
         _BestOverallCard(
-            products: visible, perServing: _perServing, prefs: widget.prefs),
+            products: visible,
+            perServing: _perServing,
+            prefs: widget.prefs,
+            watch: widget.watch),
         _sectionTitle(context, 'By Nutrient'),
         SizedBox(
           height: 44,
@@ -433,18 +436,62 @@ final _factors = <_Factor>[
   _Factor('Few risky ingredients', false, (p, s) => _riskLoad(p)),
 ];
 
+/// The factor label used for each nutrient someone can watch.
+const _watchFactorLabels = {
+  Metric.sugar: 'Low sugar',
+  Metric.fat: 'Low fat',
+  Metric.cholesterol: 'Low cholesterol',
+  Metric.protein: 'High protein',
+  Metric.sodium: 'Low sodium',
+  Metric.calories: 'Low calories',
+  Metric.carbs: 'Low carbohydrates',
+};
+
+/// The base factors plus one for each watched nutrient that isn't scored yet,
+/// so watching sodium makes sodium count.
+List<_Factor> _factorsFor(WatchList w) => [
+      ..._factors,
+      for (final m in w.nutrients)
+        if (!_factors.any((f) => f.label == _watchFactorLabels[m]))
+          _Factor(_watchFactorLabels[m]!, m == Metric.protein,
+              (p, s) => p.nutrition.value(m, perServing: s)),
+    ];
+
+bool _isWatched(String label, WatchList w) =>
+    w.nutrients.any((m) => _watchFactorLabels[m] == label);
+
+/// Preference weight, doubled for nutrients on the watch-list. "Ignore" in
+/// Preferences (weight 0) still wins.
+double _weight(String label, Preferences prefs, WatchList w) =>
+    prefs.weight(label) * (_isWatched(label, w) ? 2 : 1);
+
+/// Score multiplier when a product may contain traces of a watched allergen.
+const _mayContainPenalty = 0.9;
+
 class OverallScore {
   final Product product;
   final double? score; // 0..1, null when no factor had data
   final Map<String, double?> parts; // per factor, 0..1, null = skipped
   final int used; // factors that counted toward the score
-  OverallScore(this.product, this.score, this.parts, this.used);
+
+  /// Watch-list "contains" matches (allergen or diet): ranked last, never best.
+  final List<WatchFlag> conflicts;
+
+  /// Watch-list "may contain" matches: the score is lowered a little.
+  final List<WatchFlag> traces;
+  OverallScore(this.product, this.score, this.parts, this.used,
+      {this.conflicts = const [], this.traces = const []});
 }
 
 /// Each factor is scaled against the highest value in the group, so every
 /// part is 0..1 (1 = best in the group). "Low" factors are flipped
 /// (1 - value/max). The overall score is the weighted average of the parts,
 /// using the weights from [prefs] (a weight of 0 removes the factor).
+///
+/// The watch-list adjusts the ranking: watched nutrients count double (and
+/// become factors if they weren't), "may contain" traces lower the score by
+/// 10%, and products that contain a watched allergen or break the chosen diet
+/// are ranked after all others.
 ///
 /// A factor is skipped for everyone when fewer than two products have data
 /// for it, or when the highest value is 0 (it can't tell products apart).
@@ -453,9 +500,11 @@ List<OverallScore> computeOverall(
   List<Product> ps, {
   required bool perServing,
   Preferences prefs = const Preferences(),
+  WatchList watch = const WatchList(),
 }) {
+  final factors = _factorsFor(watch);
   final parts = {for (final p in ps) p.id: <String, double?>{}};
-  for (final f in _factors) {
+  for (final f in factors) {
     final vals = {for (final p in ps) p.id: f.value(p, perServing)};
     final known = vals.values.whereType<double>().length;
     final maxV = _maxOf(vals.values);
@@ -471,17 +520,26 @@ List<OverallScore> computeOverall(
     final m = parts[p.id]!;
     var sum = 0.0, weightSum = 0.0;
     var used = 0;
-    for (final f in _factors) {
+    for (final f in factors) {
       final v = m[f.label];
-      final w = prefs.weight(f.label);
+      final w = _weight(f.label, prefs, watch);
       if (v == null || w == 0) continue;
       sum += v * w;
       weightSum += w;
       used++;
     }
-    out.add(OverallScore(p, weightSum == 0 ? null : sum / weightSum, m, used));
+    final flags = watchFlags(p, watch);
+    final conflicts = [for (final f in flags) if (f.level == FlagLevel.contains) f];
+    final traces = [for (final f in flags) if (f.level == FlagLevel.mayContain) f];
+    var score = weightSum == 0 ? null : sum / weightSum;
+    if (score != null && traces.isNotEmpty) score *= _mayContainPenalty;
+    out.add(OverallScore(p, score, m, used, conflicts: conflicts, traces: traces));
   }
-  out.sort((a, b) => (b.score ?? -1).compareTo(a.score ?? -1));
+  // Conflicts go last; within each group, highest score first.
+  out.sort((a, b) {
+    final c = (a.conflicts.isEmpty ? 0 : 1).compareTo(b.conflicts.isEmpty ? 0 : 1);
+    return c != 0 ? c : (b.score ?? -1).compareTo(a.score ?? -1);
+  });
   return out;
 }
 
@@ -489,10 +547,12 @@ class _BestOverallCard extends StatelessWidget {
   final List<Product> products;
   final bool perServing;
   final Preferences prefs;
+  final WatchList watch;
   const _BestOverallCard({
     required this.products,
     required this.perServing,
     required this.prefs,
+    required this.watch,
   });
 
   @override
@@ -500,7 +560,8 @@ class _BestOverallCard extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final scores = products.length < 2
         ? <OverallScore>[]
-        : computeOverall(products, perServing: perServing, prefs: prefs);
+        : computeOverall(products, perServing: perServing, prefs: prefs, watch: watch);
+    final allConflict = scores.isNotEmpty && scores.every((s) => s.conflicts.isNotEmpty);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(14),
@@ -544,6 +605,25 @@ class _BestOverallCard extends StatelessWidget {
                   ],
                 ),
               ),
+            if (!watch.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.health_and_safety_outlined, size: 14, color: cs.primary),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Adjusted for your watch-list: watched nutrients count double, '
+                        'and products with your allergens or outside your diet are ranked last.',
+                        style: TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w600, color: cs.primary),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (prefs.allIgnored)
               Padding(
                 padding: const EdgeInsets.only(top: 10),
@@ -559,8 +639,16 @@ class _BestOverallCard extends StatelessWidget {
                 child: Text('Select at least two products to compare.',
                     style: TextStyle(color: cs.onSurfaceVariant)),
               )
-            else
-              for (var i = 0; i < scores.length; i++) _row(context, scores[i], i == 0),
+            else ...[
+              if (allConflict)
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Text('Every product here conflicts with your watch-list.',
+                      style: TextStyle(color: cs.error, fontWeight: FontWeight.w600)),
+                ),
+              for (var i = 0; i < scores.length; i++)
+                _row(context, scores[i], i == 0 && scores[i].conflicts.isEmpty),
+            ],
             const SizedBox(height: 8),
             Text(
               'Scores are relative to the products you are comparing, not an '
@@ -581,7 +669,8 @@ class _BestOverallCard extends StatelessWidget {
   Widget _row(BuildContext context, OverallScore s, bool best) {
     final cs = Theme.of(context).colorScheme;
     final p = s.product;
-    final active = _factors.where((f) => prefs.weight(f.label) > 0).length;
+    final factors = _factorsFor(watch);
+    final active = factors.where((f) => _weight(f.label, prefs, watch) > 0).length;
     return Container(
       margin: const EdgeInsets.only(top: 10),
       padding: const EdgeInsets.all(10),
@@ -633,12 +722,13 @@ class _BestOverallCard extends StatelessWidget {
             spacing: 6,
             runSpacing: -4,
             children: [
-              for (final f in _factors)
+              for (final f in factors)
                 Chip(
                   label: Text(
                     prefs.weight(f.label) == 0
                         ? '${f.label} off'
-                        : '${f.label} ${_pct(s.parts[f.label])}',
+                        : '${f.label} ${_pct(s.parts[f.label])}'
+                            '${_isWatched(f.label, watch) ? ' ×2' : ''}',
                     style: TextStyle(
                       fontSize: 11,
                       color: prefs.weight(f.label) == 0 ? cs.onSurfaceVariant : null,
@@ -651,6 +741,19 @@ class _BestOverallCard extends StatelessWidget {
                 ),
             ],
           ),
+          if (s.conflicts.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text('Not for you: ${s.conflicts.map((f) => f.text).join(', ')}',
+                  style: TextStyle(color: cs.error, fontWeight: FontWeight.w600, fontSize: 13)),
+            )
+          else if (s.traces.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                  '${s.traces.map((f) => f.text).join(', ')}: score lowered 10%',
+                  style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w600, fontSize: 13)),
+            ),
           if (s.used < active)
             Padding(
               padding: const EdgeInsets.only(top: 6),
