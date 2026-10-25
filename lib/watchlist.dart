@@ -153,13 +153,16 @@ class WatchFlagChips extends StatelessWidget {
                   color: f.level == FlagLevel.contains ? cs.onErrorContainer : cs.onSurfaceVariant,
                 ),
                 const SizedBox(width: 4),
-                Text(f.text,
-                    style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: f.level == FlagLevel.contains
-                            ? cs.onErrorContainer
-                            : cs.onSurface)),
+                // Flexible: long flags wrap inside the chip on narrow rows.
+                Flexible(
+                  child: Text(f.text,
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: f.level == FlagLevel.contains
+                              ? cs.onErrorContainer
+                              : cs.onSurface)),
+                ),
               ],
             ),
           ),
@@ -231,9 +234,14 @@ class _WatchListScreenState extends State<WatchListScreen> {
               child: SegmentedButton<Diet>(
                 showSelectedIcon: false,
                 segments: const [
-                  ButtonSegment(value: Diet.none, label: Text('Any')),
-                  ButtonSegment(value: Diet.vegetarian, label: Text('Vegetarian')),
-                  ButtonSegment(value: Diet.vegan, label: Text('Vegan')),
+                  // scaleDown: shrink rather than break "Vegetarian" mid-word.
+                  ButtonSegment(
+                      value: Diet.none, label: FittedBox(fit: BoxFit.scaleDown, child: Text('Any'))),
+                  ButtonSegment(
+                      value: Diet.vegetarian,
+                      label: FittedBox(fit: BoxFit.scaleDown, child: Text('Vegetarian'))),
+                  ButtonSegment(
+                      value: Diet.vegan, label: FittedBox(fit: BoxFit.scaleDown, child: Text('Vegan'))),
                 ],
                 selected: {_w.diet},
                 onSelectionChanged: (s) => _update(_w.copyWith(diet: s.first)),

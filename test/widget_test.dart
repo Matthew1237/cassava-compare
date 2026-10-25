@@ -26,7 +26,7 @@ void main() {
     expect(find.text('Compare'), findsNothing);
   });
 
-  testWidgets('Compare screen splits into three tabs', (tester) async {
+  testWidgets('Compare screen has Nutrition and Ingredients tabs', (tester) async {
     await tester.pumpWidget(MaterialApp(
       home: CompareScreen(products: [_product('1', 'Crisps A', 520), _product('2', 'Crisps B', 480)]),
     ));
@@ -34,7 +34,7 @@ void main() {
 
     expect(find.text('Nutrition'), findsOneWidget);
     expect(find.text('Ingredients'), findsOneWidget);
-    expect(find.text('Reviews'), findsOneWidget);
+    expect(find.text('Reviews'), findsNothing); // hidden by the team
     // The list builds lazily, so scroll the section into view first.
     await tester.scrollUntilVisible(find.text('Side by side'), 300,
         scrollable: find.byWidgetPredicate((w) => w is Scrollable && w.axisDirection == AxisDirection.down).first);

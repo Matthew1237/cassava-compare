@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -237,34 +239,73 @@ void main() {
       expect(find.textContaining('as high'), findsOneWidget);
     });
 
-    testWidgets('scanner: typed barcode lands in the tray and the counter', (t) async {
-      final codes = <String>[];
+    /// Advances [ms] milliseconds in 50 ms frames (route animations need frames).
+    Future<void> frames(WidgetTester t, int ms) async {
+      for (var i = 0; i < ms ~/ 50; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+    }
+
+    /// Opens the scanner from a button and records what it returns.
+    Future<List<String?>> openScanner(
+        WidgetTester t, Future<(String, Product?)> Function(String) onCode) async {
+      final results = <String?>[];
       await t.pumpWidget(MaterialApp(
-        home: ScannerScreen(onCode: (code) async {
-          codes.add(code);
-          return ('Added Cola · Contains milk', _p(code, 'Cola'));
-        }),
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () async => results.add(await Navigator.of(context).push<String>(
+                MaterialPageRoute(builder: (_) => ScannerScreen(onCode: onCode)))),
+            child: const Text('open'),
+          ),
+        ),
       ));
-      await t.pump();
+      await t.tap(find.text('open'));
+      // The scan line animates forever, so advance time in frames instead of settling.
+      await frames(t, 600);
+      return results;
+    }
+
+    Future<void> typeCode(WidgetTester t, String text) async {
+      await t.tap(find.byTooltip('Type number'));
+      await frames(t, 400);
+      await t.enterText(find.byType(TextField), text);
+      await t.tap(find.widgetWithText(FilledButton, 'Look up'));
+      await frames(t, 300); // dialog closes, lookup runs
+    }
+
+    testWidgets('scanner: one product is added, then it closes', (t) async {
+      final codes = <String>[];
+      final results = await openScanner(t, (code) async {
+        codes.add(code);
+        return ('Added Cola · Contains milk', _p(code, 'Cola'));
+      });
       expect(find.text('Nothing scanned yet'), findsOneWidget);
 
-      await t.tap(find.byTooltip('Type number'));
-      // The scan line animates forever, so advance time instead of settling.
-      await t.pump(const Duration(milliseconds: 500));
       // Pasted text with spaces and letters keeps only the digits.
-      await t.enterText(find.byType(TextField), 'EAN 5449 0000 00996');
-      await t.tap(find.widgetWithText(FilledButton, 'Look up'));
-      await t.pump(); // lookup runs
-      await t.pump(const Duration(milliseconds: 800)); // highlight time passes
+      await typeCode(t, 'EAN 5449 0000 00996');
       expect(codes, ['5449000000996']);
-      expect(find.text('Cola'), findsOneWidget);
-      expect(find.text('Added Cola · Contains milk'), findsOneWidget);
-      expect(find.text('Done · 1 added'), findsOneWidget);
-      expect(find.text('1 added'), findsOneWidget);
+      expect(find.text('Added Cola · Contains milk'), findsOneWidget); // shown before closing
+
+      await frames(t, 1200); // highlight time passes, page closes
+      expect(find.byType(ScannerScreen), findsNothing);
+      expect(results, ['Added Cola · Contains milk']);
+    });
+
+    testWidgets('scanner: a failed lookup stays open so you can retry', (t) async {
+      final results = await openScanner(t, (code) async => ('Barcode $code is not a valid food product.', null));
+      await typeCode(t, '123');
+      await frames(t, 800);
+      expect(find.byType(ScannerScreen), findsOneWidget);
+      expect(find.text('Barcode 123 is not a valid food product.'), findsOneWidget);
+      expect(results, isEmpty);
 
       // After 8 s without a read, a tip appears.
       await t.pump(const Duration(seconds: 9));
       expect(find.textContaining('Having trouble?'), findsOneWidget);
+
+      await t.tap(find.text('Cancel'));
+      await frames(t, 600);
+      expect(results, [null]);
     });
 
     testWidgets('loading a saved comparison can be undone', (t) async {
@@ -316,6 +357,76 @@ void main() {
       await t.pumpAndSettle();
       expect(added, ['2']);
       expect(find.byTooltip('In your basket'), findsOneWidget);
+    });
+  });
+
+  group('small phone, large text (no overflow)', () {
+    // 340 dp wide at 1.3× text: any overflow fails the test.
+    Widget small(Widget home) => MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(textScaler: const TextScaler.linear(1.3)),
+            child: child!,
+          ),
+          home: home,
+        );
+    void phone(WidgetTester t) {
+      t.view.physicalSize = const Size(340, 740);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+    }
+
+    final nuts = _p('1', 'Nutella hazelnut spread with cocoa', sugar: 56, kcal: 539)
+      ..allergens = ['en:milk', 'en:nuts']
+      ..price = 3.49
+      ..quantityGrams = 400;
+    const watch = WatchList(allergens: {'en:milk', 'en:nuts'}, diet: Diet.vegetarian);
+
+    testWidgets('watch-list screen', (t) async {
+      phone(t);
+      await t.pumpWidget(small(const WatchListScreen(initial: watch)));
+      await t.pumpAndSettle();
+      expect(find.text('Allergens'), findsOneWidget);
+      // The Diet buttons are further down; scroll so they are built and laid out.
+      await t.scrollUntilVisible(find.text('Vegetarian'), 200);
+      expect(find.text('Vegetarian'), findsOneWidget);
+    });
+
+    testWidgets('home with a flagged product in the basket', (t) async {
+      phone(t);
+      SharedPreferences.setMockInitialValues({'watchlist.v1': jsonEncode(watch.toJson())});
+      await t.pumpWidget(small(HomeScreen(service: _FakeLookup())));
+      await t.pumpAndSettle();
+      // On a short screen with big text the buttons start below the fold.
+      await t.scrollUntilVisible(find.text('Type number'), 200);
+      await t.tap(find.text('Type number'));
+      await t.pumpAndSettle();
+      await t.enterText(find.byType(TextField), '1');
+      await t.tap(find.text('Look up'));
+      await t.pumpAndSettle();
+      await t.scrollUntilVisible(find.text('Vegetarian status unknown'), 200);
+      expect(find.text('Tap for details · swipe to remove'), findsOneWidget);
+    });
+
+    testWidgets('compare screen and product sheet', (t) async {
+      phone(t);
+      await t.pumpWidget(small(CompareScreen(
+          products: [nuts, _p('2', 'Strawberry jam extra fruit', sugar: 59, kcal: 241)],
+          watch: watch)));
+      await t.pumpAndSettle();
+      expect(find.text('Contains tree nuts'), findsOneWidget);
+
+      await t.pumpWidget(small(Scaffold(
+        body: ProductSheet(
+          product: nuts,
+          service: _FakeService([_p('3', 'Peanut butter smooth crunchy', protein: 25, sugar: 5)]),
+          watch: watch,
+          onAdd: (_) async {},
+          onEditPrice: (_) async {},
+          inBasket: (_) => false,
+        ),
+      )));
+      await t.pumpAndSettle();
+      expect(find.text('Similar products'), findsOneWidget);
     });
   });
 }

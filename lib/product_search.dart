@@ -62,7 +62,9 @@ class ProductSearch {
       'action': 'process',
       'json': '1',
       'page_size': '20',
-      'fields': 'code,product_name,brands,image_front_small_url',
+      // Only return products whose main product language is English.
+      // We request `lang` so we can enforce the condition locally.
+      'fields': 'code,product_name,brands,image_front_small_url,lang',
     });
     final http.Response res;
     try {
@@ -83,7 +85,9 @@ class ProductSearch {
     String s(dynamic v) => (v as String?)?.trim() ?? '';
     return _cache[text] = [
       for (final p in list.cast<Map<String, dynamic>>())
-        if (s(p['code']).isNotEmpty && s(p['product_name']).isNotEmpty)
+        if (s(p['code']).isNotEmpty &&
+            s(p['product_name']).isNotEmpty &&
+            s(p['lang']).toLowerCase() == 'en')
           Candidate(s(p['code']), s(p['product_name']),
               s(p['brands']).split(',').first.trim(), p['image_front_small_url'] as String?),
     ];

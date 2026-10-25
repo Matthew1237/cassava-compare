@@ -25,6 +25,8 @@
 // on the compare screen: a relative score (low sugar, fat and cholesterol,
 // high protein, few risk-classified ingredients) that is only meaningful
 // within the group of products being compared, with a per-factor breakdown.
+// The user can set how much each factor counts in the Preferences card on
+// the home screen.
 //
 // File layout
 // -----------
@@ -32,6 +34,7 @@
 //   models.dart          Metric, Nutrition, Review, Product, helpers
 //   services.dart        Open Food Facts lookup, ReviewProvider, ReviewAnalyzer
 //   compare_screen.dart  compare screen, best-overall score, nutrition/review widgets
+//   preferences.dart     factor weights and the Preferences card (sliders)
 //   product_search.dart  search for a product by name
 //   product_sheet.dart   product details: price, similar products
 //   watchlist.dart       allergens / diet / nutrients the user watches
@@ -46,6 +49,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'compare_screen.dart';
 import 'models.dart';
+import 'preferences.dart';
 import 'product_search.dart';
 import 'product_sheet.dart';
 import 'saved.dart';
@@ -201,9 +205,10 @@ class _MarkPainter extends CustomPainter {
 // Barcode scanner screen
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Rapid scan: the camera stays open and every new barcode goes to [onCode],
-/// which adds it to the basket and returns a status line and the product
-/// that was added (null when nothing was added).
+/// Scans one product: the barcode goes to [onCode], which adds it to the
+/// basket and returns a status line and the product (null when nothing was
+/// added). After a product is added the screen closes and returns the status
+/// line; after a failure it stays open so the user can try again.
 class ScannerScreen extends StatefulWidget {
   final Future<(String, Product?)> Function(String code) onCode;
   const ScannerScreen({super.key, required this.onCode});
@@ -229,7 +234,6 @@ class _ScannerScreenState extends State<ScannerScreen> {
   bool _stuck = false;
   String? _status;
   Product? _last;
-  int _added = 0;
   final _seen = <String>{};
 
   /// The barcode just read and the camera frame size, for the highlight.
@@ -273,14 +277,15 @@ class _ScannerScreenState extends State<ScannerScreen> {
     if (added == null) _seen.remove(code); // allow a retry after an error
     setState(() {
       _status = msg;
-      if (added != null) {
-        _last = added;
-        _added++;
-      }
+      if (added != null) _last = added;
     });
-    // Keep the highlight briefly so the read is visible, then scan the next pack.
+    // Keep the highlight briefly so the read is visible.
     await Future.delayed(const Duration(milliseconds: 700));
     if (!mounted) return;
+    if (added != null) {
+      Navigator.of(context).pop(msg);
+      return;
+    }
     setState(() {
       _found = false;
       _hit = null;
@@ -381,19 +386,9 @@ class _ScannerScreenState extends State<ScannerScreen> {
                 onPressed: () => Navigator.of(context).pop(),
               ),
               const SizedBox(width: 4),
-              const Text('Scan products',
+              const Text('Scan a barcode',
                   style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700)),
               const Spacer(),
-              if (_added > 0)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.45),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text('$_added added',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                ),
             ],
           ),
         ),
@@ -478,7 +473,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                _status ?? 'Each pack you scan goes straight into your basket.',
+                                _status ?? 'The product goes straight into your basket.',
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
@@ -494,7 +489,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
                     width: double.infinity,
                     child: FilledButton(
                       onPressed: () => Navigator.of(context).pop(),
-                      child: Text(_added == 0 ? 'Done' : 'Done · $_added added'),
+                      child: const Text('Cancel'),
                     ),
                   ),
                 ],
@@ -721,6 +716,9 @@ class _HomeScreenState extends State<HomeScreen> {
   WatchList _watch = const WatchList();
   Map<String, (double, double?)> _prices = {};
 
+  /// How much each factor counts toward the "Best overall choice" score.
+  Preferences _prefs = const Preferences();
+
   /// Last barcode Open Food Facts didn't have, offered as "add it" in a toast.
   String? _missing;
 
@@ -761,7 +759,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _scan() async {
-    await Navigator.of(context).push(MaterialPageRoute(
+    // The scanner returns its status line ("Added …") once a product is added.
+    final result = await Navigator.of(context).push<String>(MaterialPageRoute(
       builder: (_) => ScannerScreen(onCode: (code) async {
         final (msg, added) = await _addBarcode(code);
         return (msg, added ? _items.last : null);
@@ -769,7 +768,9 @@ class _HomeScreenState extends State<HomeScreen> {
     ));
     final missing = _missing;
     _missing = null;
-    if (missing != null) {
+    if (result != null) {
+      _toast(result);
+    } else if (missing != null) {
       _toast('$missing isn\'t in Open Food Facts yet.', missingCode: missing);
     }
   }
@@ -916,7 +917,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _openCompare() {
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => CompareScreen(products: List.of(_items), watch: _watch),
+      builder: (_) =>
+          CompareScreen(products: List.of(_items), prefs: _prefs, watch: _watch),
     ));
   }
 
@@ -930,7 +932,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             CassavaMark(size: 30),
             SizedBox(width: 10),
-            Text('Cassava'),
+            Flexible(child: Text('Cassava', overflow: TextOverflow.ellipsis)),
           ],
         ),
         actions: [
@@ -1012,9 +1014,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(width: 8),
                 Text('${_items.length}',
                     style: tt.titleMedium?.copyWith(color: cs.onSurfaceVariant)),
-                const Spacer(),
-                Text('Tap for details · swipe to remove',
-                    style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+                const SizedBox(width: 12),
+                // Wraps on narrow screens / large text instead of overflowing.
+                Expanded(
+                  child: Text('Tap for details · swipe to remove',
+                      textAlign: TextAlign.end,
+                      style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+                ),
               ],
             ),
             const SizedBox(height: 12),
@@ -1092,6 +1098,12 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ],
+          const SizedBox(height: 24),
+          // Weights for the "Best overall choice" score on the compare screen.
+          PreferencesCard(
+            prefs: _prefs,
+            onChanged: (p) => setState(() => _prefs = p),
+          ),
           const SizedBox(height: 24),
           Text(
             'Nutrition data from Open Food Facts. It is crowd-sourced and may be '
