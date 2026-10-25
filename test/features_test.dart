@@ -251,8 +251,9 @@ void main() {
       await t.tap(find.byTooltip('Type number'));
       // The scan line animates forever, so advance time instead of settling.
       await t.pump(const Duration(milliseconds: 500));
-      await t.enterText(find.byType(TextField), '5449000000996');
-      await t.tap(find.widgetWithText(FilledButton, 'Add'));
+      // Pasted text with spaces and letters keeps only the digits.
+      await t.enterText(find.byType(TextField), 'EAN 5449 0000 00996');
+      await t.tap(find.widgetWithText(FilledButton, 'Look up'));
       await t.pump(); // lookup runs
       await t.pump(const Duration(milliseconds: 800)); // highlight time passes
       expect(codes, ['5449000000996']);

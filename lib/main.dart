@@ -290,27 +290,8 @@ class _ScannerScreenState extends State<ScannerScreen> {
   }
 
   Future<void> _typeNumber() async {
-    final controller = TextEditingController();
-    final code = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Type the barcode number'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'e.g. 5449000000996'),
-          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-              child: const Text('Add')),
-        ],
-      ),
-    );
-    if (code != null && code.isNotEmpty && !_busy) await _handle(code);
+    final code = await askBarcode(context);
+    if (code != null && !_busy) await _handle(code);
   }
 
   Future<void> _toggleZoom() async {
@@ -527,6 +508,33 @@ class _ScannerScreenState extends State<ScannerScreen> {
 }
 
 const _readGreen = Color(0xFF6BD49A);
+
+/// Asks for a barcode number. Returns its digits, or null when cancelled or
+/// when nothing numeric was entered (pasted text like "abc 123" keeps "123").
+Future<String?> askBarcode(BuildContext context) async {
+  final controller = TextEditingController();
+  final raw = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Enter barcode'),
+      content: TextField(
+        controller: controller,
+        keyboardType: TextInputType.number,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: 'e.g. 5449000000996'),
+        onSubmitted: (v) => Navigator.pop(ctx, v),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: const Text('Look up')),
+      ],
+    ),
+  );
+  final digits = raw?.replaceAll(RegExp(r'\D'), '') ?? '';
+  return digits.isEmpty ? null : digits;
+}
 
 /// A round camera control with a label underneath.
 class _RoundControl extends StatelessWidget {
@@ -773,6 +781,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openSaved() async {
+    // An old "Removed … Undo" would otherwise follow onto the saved list.
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
     final c = await Navigator.of(context)
         .push<SavedComparison>(MaterialPageRoute(builder: (_) => const SavedScreen()));
     if (c == null || !mounted) return;
@@ -837,27 +847,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _enterManually() async {
-    final controller = TextEditingController();
-    final code = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Enter barcode'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'e.g. 5449000000996'),
-          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-              child: const Text('Look up')),
-        ],
-      ),
-    );
-    if (code != null && code.isNotEmpty) await _addAndToast(code);
+    final code = await askBarcode(context);
+    if (code != null) await _addAndToast(code);
   }
 
   Future<void> _bySearch() async {
@@ -1075,8 +1066,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           children: [
                             Text(
                                 [
-                                  p.category,
+                                  // Price first: long category names would cut it off.
                                   if (p.pricePer100g case final v?) '${v.toStringAsFixed(2)} / 100 g',
+                                  p.category,
                                 ].join(' · '),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis),
