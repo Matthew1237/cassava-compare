@@ -1,4 +1,4 @@
-// Compare screen: nutrition, ingredients and reviews tabs, and their widgets.
+// Compare screen: nutrition and ingredients tabs, and their widgets.
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -6,9 +6,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'models.dart';
-import 'preferences.dart';
 import 'saved.dart';
-import 'services.dart';
 import 'watchlist.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -17,14 +15,10 @@ import 'watchlist.dart';
 
 class CompareScreen extends StatefulWidget {
   final List<Product> products;
-
-  /// How much each factor counts toward the best-overall score.
-  final Preferences prefs;
   final WatchList watch;
   const CompareScreen({
     super.key,
     required this.products,
-    this.prefs = const Preferences(),
     this.watch = const WatchList(),
   });
 
@@ -35,7 +29,6 @@ class CompareScreen extends StatefulWidget {
 class _CompareScreenState extends State<CompareScreen> {
   final Set<String> _hidden = {};
   bool _perServing = false;
-  String? _themeFilter;
 
   /// The nutrient shown in the "By nutrient" graph: the first one the user watches.
   late Metric _metric = _metricsInOrder.first;
@@ -94,7 +87,7 @@ class _CompareScreenState extends State<CompareScreen> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 2, // Nutrition + Ingredients (the Reviews tab is not shown)
+      length: 2, // Nutrition + Ingredients
       child: Scaffold(
         appBar: AppBar(
           title: Text('Comparing ${widget.products.length} products'),
@@ -188,10 +181,7 @@ class _CompareScreenState extends State<CompareScreen> {
         ],
         const SizedBox(height: 20),
         _BestOverallCard(
-            products: visible,
-            perServing: _perServing,
-            prefs: widget.prefs,
-            watch: widget.watch),
+            products: visible, perServing: _perServing, watch: widget.watch),
         _sectionTitle(context, 'By Nutrient'),
         SizedBox(
           height: 44,
@@ -247,153 +237,6 @@ class _CompareScreenState extends State<CompareScreen> {
       ],
     );
   }
-
-  Widget _buildReviewsTab(BuildContext context) {
-    final products = widget.products;
-    final cs = Theme.of(context).colorScheme;
-    final hasReviews = products.any((p) => p.reviews.isNotEmpty);
-
-    if (!hasReviews) {
-      return ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.rate_review_outlined, color: cs.primary, size: 32),
-                  const SizedBox(height: 10),
-                  Text('No review source connected',
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 6),
-                  const Text(
-                    'Open Food Facts covers nutrition, not customer reviews. '
-                    'To show critical reviews, connect a licensed review source '
-                    'through the ReviewProvider in the code.',
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          const _NeutralityNote(),
-        ],
-      );
-    }
-
-    final themes = ReviewAnalyzer.allThemes(products);
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Text('Recurring complaints across products',
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
-                ?.copyWith(fontWeight: FontWeight.w700)),
-        const SizedBox(height: 4),
-        Text(
-          'Share of each product\'s critical reviews (3★ or lower) that mention the topic.',
-          style: Theme.of(context)
-              .textTheme
-              .bodySmall
-              ?.copyWith(color: cs.onSurfaceVariant),
-        ),
-        const SizedBox(height: 10),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(10),
-            child: _themeMatrix(products, themes.take(8).toList()),
-          ),
-        ),
-        const SizedBox(height: 14),
-        Text('Filter reviews by topic', style: Theme.of(context).textTheme.labelLarge),
-        const SizedBox(height: 6),
-        SizedBox(
-          height: 44,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: ChoiceChip(
-                  label: const Text('All'),
-                  selected: _themeFilter == null,
-                  onSelected: (_) => setState(() => _themeFilter = null),
-                ),
-              ),
-              for (final t in themes)
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: ChoiceChip(
-                    label: Text(t),
-                    selected: _themeFilter == t,
-                    onSelected: (sel) => setState(() => _themeFilter = sel ? t : null),
-                  ),
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 8),
-        for (final p in products) _ProductReviewCard(product: p, themeFilter: _themeFilter),
-        const SizedBox(height: 4),
-        const _NeutralityNote(),
-      ],
-    );
-  }
-
-  Widget _themeMatrix(List<Product> ps, List<String> themes) {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Table(
-        defaultColumnWidth: const FixedColumnWidth(86),
-        columnWidths: const {0: FixedColumnWidth(136)},
-        defaultVerticalAlignment: TableCellVerticalAlignment.middle,
-        children: [
-          TableRow(children: [
-            const SizedBox(),
-            for (final p in ps)
-              Padding(
-                padding: const EdgeInsets.all(6),
-                child: Text(p.name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.labelSmall),
-              ),
-          ]),
-          for (final t in themes)
-            TableRow(children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
-                child: Text(t, style: const TextStyle(fontWeight: FontWeight.w500)),
-              ),
-              for (final p in ps)
-                Builder(builder: (_) {
-                  final s = ReviewAnalyzer.share(p, t);
-                  return Container(
-                    margin: const EdgeInsets.all(3),
-                    height: 34,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: s == 0
-                          ? Colors.black.withValues(alpha: 0.03)
-                          : p.color.withValues(alpha: 0.15 + s * 0.55),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(s == 0 ? '–' : '${(s * 100).round()}%',
-                        style: const TextStyle(fontWeight: FontWeight.w600)),
-                  );
-                }),
-            ]),
-        ],
-      ),
-    );
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -413,7 +256,12 @@ class _Factor {
   final String label;
   final bool higherIsBetter;
   final double? Function(Product p, bool perServing) value;
-  const _Factor(this.label, this.higherIsBetter, this.value);
+
+  /// Nutrient scored against its daily reference amount. Null = no daily
+  /// value exists (ingredient risk), so the factor is scaled against the
+  /// highest value in the group instead.
+  final Metric? metric;
+  const _Factor(this.label, this.higherIsBetter, this.value, {this.metric});
 }
 
 /// Weighted count of classified ingredients: high risk = 3, limited risk = 2,
@@ -426,13 +274,17 @@ double? _riskLoad(Product p) => p.ingredientItems.isEmpty
             p.countRisk(RiskLevel.veryLow))
         .toDouble();
 
-/// Labels here must match [factorLabels] in preferences.dart.
+/// The base factors, all counted equally unless the nutrient is watched.
 final _factors = <_Factor>[
-  _Factor('Low sugar', false, (p, s) => p.nutrition.value(Metric.sugar, perServing: s)),
-  _Factor('Low fat', false, (p, s) => p.nutrition.value(Metric.fat, perServing: s)),
+  _Factor('Low sugar', false, (p, s) => p.nutrition.value(Metric.sugar, perServing: s),
+      metric: Metric.sugar),
+  _Factor('Low fat', false, (p, s) => p.nutrition.value(Metric.fat, perServing: s),
+      metric: Metric.fat),
   _Factor('Low cholesterol', false,
-      (p, s) => p.nutrition.value(Metric.cholesterol, perServing: s)),
-  _Factor('High protein', true, (p, s) => p.nutrition.value(Metric.protein, perServing: s)),
+      (p, s) => p.nutrition.value(Metric.cholesterol, perServing: s),
+      metric: Metric.cholesterol),
+  _Factor('High protein', true, (p, s) => p.nutrition.value(Metric.protein, perServing: s),
+      metric: Metric.protein),
   _Factor('Few risky ingredients', false, (p, s) => _riskLoad(p)),
 ];
 
@@ -454,16 +306,15 @@ List<_Factor> _factorsFor(WatchList w) => [
       for (final m in w.nutrients)
         if (!_factors.any((f) => f.label == _watchFactorLabels[m]))
           _Factor(_watchFactorLabels[m]!, m == Metric.protein,
-              (p, s) => p.nutrition.value(m, perServing: s)),
+              (p, s) => p.nutrition.value(m, perServing: s),
+              metric: m),
     ];
 
 bool _isWatched(String label, WatchList w) =>
     w.nutrients.any((m) => _watchFactorLabels[m] == label);
 
-/// Preference weight, doubled for nutrients on the watch-list. "Ignore" in
-/// Preferences (weight 0) still wins.
-double _weight(String label, Preferences prefs, WatchList w) =>
-    prefs.weight(label) * (_isWatched(label, w) ? 2 : 1);
+/// Every factor counts 1, and 2 when its nutrient is on the watch-list.
+double _weight(String label, WatchList w) => _isWatched(label, w) ? 2 : 1;
 
 /// Score multiplier when a product may contain traces of a watched allergen.
 const _mayContainPenalty = 0.9;
@@ -483,29 +334,49 @@ class OverallScore {
       {this.conflicts = const [], this.traces = const []});
 }
 
-/// Each factor is scaled against the highest value in the group, so every
-/// part is 0..1 (1 = best in the group). "Low" factors are flipped
-/// (1 - value/max). The overall score is the weighted average of the parts,
-/// using the weights from [prefs] (a weight of 0 removes the factor).
+/// Every factor becomes a part from 0 to 1 (1 = best).
 ///
-/// The watch-list adjusts the ranking: watched nutrients count double (and
-/// become factors if they weren't), "may contain" traces lower the score by
-/// 10%, and products that contain a watched allergen or break the chosen diet
-/// are ranked after all others.
+/// Nutrient factors are measured against the daily reference amount of the
+/// nutrient ([Metric.dailyReference]): the fraction of the daily value in the
+/// amount (capped at 100%), flipped for "low" factors (1 - fraction). So a
+/// product's nutrient parts don't depend on what it is compared with.
+/// Ingredient risk has no daily value, so it is still scaled against the
+/// highest value in the group (1 = best in the group), and skipped when fewer
+/// than two products have data or when the highest value is 0.
 ///
-/// A factor is skipped for everyone when fewer than two products have data
-/// for it, or when the highest value is 0 (it can't tell products apart).
-/// A product with missing data is averaged over the factors it does have.
+/// The overall score is the weighted average of the parts. A product with
+/// missing data is averaged over the factors it does have.
+///
+/// The watch-list sets the weights and adjusts the ranking: watched nutrients
+/// count double (and become factors if they weren't), "may contain" traces
+/// lower the score by 10%, and products that contain a watched allergen or
+/// break the chosen diet are ranked after all others.
 List<OverallScore> computeOverall(
   List<Product> ps, {
   required bool perServing,
-  Preferences prefs = const Preferences(),
   WatchList watch = const WatchList(),
 }) {
   final factors = _factorsFor(watch);
   final parts = {for (final p in ps) p.id: <String, double?>{}};
   for (final f in factors) {
     final vals = {for (final p in ps) p.id: f.value(p, perServing)};
+
+    // Nutrients: measured against the daily reference amount, capped at 100%.
+    final metric = f.metric;
+    if (metric != null) {
+      for (final p in ps) {
+        final v = vals[p.id];
+        if (v == null) {
+          parts[p.id]![f.label] = null;
+          continue;
+        }
+        final frac = (v / metric.dailyReference).clamp(0.0, 1.0).toDouble();
+        parts[p.id]![f.label] = f.higherIsBetter ? frac : 1 - frac;
+      }
+      continue;
+    }
+
+    // No daily value (ingredient risk): scale against the group.
     final known = vals.values.whereType<double>().length;
     final maxV = _maxOf(vals.values);
     for (final p in ps) {
@@ -522,8 +393,8 @@ List<OverallScore> computeOverall(
     var used = 0;
     for (final f in factors) {
       final v = m[f.label];
-      final w = _weight(f.label, prefs, watch);
-      if (v == null || w == 0) continue;
+      if (v == null) continue;
+      final w = _weight(f.label, watch);
       sum += v * w;
       weightSum += w;
       used++;
@@ -546,12 +417,10 @@ List<OverallScore> computeOverall(
 class _BestOverallCard extends StatelessWidget {
   final List<Product> products;
   final bool perServing;
-  final Preferences prefs;
   final WatchList watch;
   const _BestOverallCard({
     required this.products,
     required this.perServing,
-    required this.prefs,
     required this.watch,
   });
 
@@ -560,7 +429,7 @@ class _BestOverallCard extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final scores = products.length < 2
         ? <OverallScore>[]
-        : computeOverall(products, perServing: perServing, prefs: prefs, watch: watch);
+        : computeOverall(products, perServing: perServing, watch: watch);
     final allConflict = scores.isNotEmpty && scores.every((s) => s.conflicts.isNotEmpty);
     return Card(
       child: Padding(
@@ -579,32 +448,14 @@ class _BestOverallCard extends StatelessWidget {
             const SizedBox(height: 2),
             Text(
               'Low sugar, low fat, low cholesterol, high protein and few '
-              'risk-classified ingredients (high counts most), each scaled to '
-              'the best and worst in this group.',
+              'risk-classified ingredients (high counts most). Nutrients are '
+              'measured against general daily reference amounts; ingredient '
+              'risk is compared within this group.',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
                   ?.copyWith(color: cs.onSurfaceVariant),
             ),
-            if (!prefs.isDefault)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Row(
-                  children: [
-                    Icon(Icons.tune, size: 14, color: cs.primary),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        'Weighted by your preferences.',
-                        style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: cs.primary),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
             if (!watch.isEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
@@ -615,7 +466,7 @@ class _BestOverallCard extends StatelessWidget {
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        'Adjusted for your watch-list: watched nutrients count double, '
+                        'Adjusted for your watch-list: watched nutrients count double (×2), '
                         'and products with your allergens or outside your diet are ranked last.',
                         style: TextStyle(
                             fontSize: 12, fontWeight: FontWeight.w600, color: cs.primary),
@@ -624,16 +475,7 @@ class _BestOverallCard extends StatelessWidget {
                   ],
                 ),
               ),
-            if (prefs.allIgnored)
-              Padding(
-                padding: const EdgeInsets.only(top: 10),
-                child: Text(
-                  'Every factor is set to Ignore. Raise at least one in '
-                  'Preferences on the home screen to get a score.',
-                  style: TextStyle(color: cs.onSurfaceVariant),
-                ),
-              )
-            else if (scores.isEmpty)
+            if (scores.isEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 10),
                 child: Text('Select at least two products to compare.',
@@ -651,10 +493,11 @@ class _BestOverallCard extends StatelessWidget {
             ],
             const SizedBox(height: 8),
             Text(
-              'Scores are relative to the products you are comparing, not an '
-              'absolute health rating. Factors are weighted by your '
-              'Preferences (equal by default), and missing data is skipped. '
-              'Ingredient risk counts high = 3, limited = 2, very low = 1.',
+              'Nutrient scores use general daily reference amounts (2,000 kcal '
+              'diet), not an absolute health rating, and individual needs vary. '
+              'All factors count equally, except nutrients on your watch-list, '
+              'which count double (×2). Missing data is skipped. Ingredient risk '
+              'counts high = 3, limited = 2, very low = 1.',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
@@ -670,7 +513,7 @@ class _BestOverallCard extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final p = s.product;
     final factors = _factorsFor(watch);
-    final active = factors.where((f) => _weight(f.label, prefs, watch) > 0).length;
+    final active = factors.length;
     return Container(
       margin: const EdgeInsets.only(top: 10),
       padding: const EdgeInsets.all(10),
@@ -725,18 +568,12 @@ class _BestOverallCard extends StatelessWidget {
               for (final f in factors)
                 Chip(
                   label: Text(
-                    prefs.weight(f.label) == 0
-                        ? '${f.label} off'
-                        : '${f.label} ${_pct(s.parts[f.label])}'
-                            '${_isWatched(f.label, watch) ? ' ×2' : ''}',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: prefs.weight(f.label) == 0 ? cs.onSurfaceVariant : null,
-                    ),
+                    '${f.label} ${_pct(s.parts[f.label])}'
+                    '${_isWatched(f.label, watch) ? ' ×2' : ''}',
+                    style: const TextStyle(fontSize: 11),
                   ),
                   visualDensity: VisualDensity.compact,
-                  backgroundColor: p.color
-                      .withValues(alpha: prefs.weight(f.label) == 0 ? 0.04 : 0.12),
+                  backgroundColor: p.color.withValues(alpha: 0.12),
                   side: BorderSide.none,
                 ),
             ],
@@ -1311,136 +1148,6 @@ class _CountPill extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Review widgets
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _ProductReviewCard extends StatelessWidget {
-  final Product product;
-  final String? themeFilter;
-  const _ProductReviewCard({required this.product, required this.themeFilter});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final stats = ReviewAnalyzer.themes(product);
-    final reviews = ReviewAnalyzer.helpful(product, theme: themeFilter);
-    final rating = product.avgRating == null
-        ? ''
-        : ' · ${product.avgRating}★ avg · ${product.ratingCount ?? 0} ratings';
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                ProductThumb(product, size: 40),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(product.name,
-                          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-                      Text('${product.brand}$rating',
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(color: cs.onSurfaceVariant)),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            if (product.reviews.isEmpty)
-              Text('No reviews available for this product.',
-                  style: TextStyle(color: cs.onSurfaceVariant))
-            else ...[
-              Text(ReviewAnalyzer.summary(product)),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 6,
-                runSpacing: -4,
-                children: [
-                  for (final s in stats)
-                    Chip(
-                      label: Text('${s.theme} · ${s.count}'),
-                      visualDensity: VisualDensity.compact,
-                      backgroundColor: themeFilter == s.theme
-                          ? product.color.withValues(alpha: 0.35)
-                          : product.color.withValues(alpha: 0.12),
-                      side: BorderSide.none,
-                    ),
-                ],
-              ),
-              const Divider(height: 24),
-              Text(
-                themeFilter == null
-                    ? 'Most helpful critical reviews'
-                    : 'Most helpful reviews mentioning "$themeFilter"',
-                style: Theme.of(context).textTheme.labelLarge,
-              ),
-              const SizedBox(height: 6),
-              if (reviews.isEmpty)
-                Text('No critical reviews mention this topic.',
-                    style: TextStyle(color: cs.onSurfaceVariant))
-              else
-                for (final r in reviews.take(3)) _ReviewTile(review: r, accent: product.color),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ReviewTile extends StatelessWidget {
-  final Review review;
-  final Color accent;
-  const _ReviewTile({required this.review, required this.accent});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(12),
-        border: Border(left: BorderSide(color: accent, width: 4)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(children: [
-            Stars(review.stars),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(review.title,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                  overflow: TextOverflow.ellipsis),
-            ),
-          ]),
-          const SizedBox(height: 4),
-          Text(review.body),
-          const SizedBox(height: 6),
-          Text('👍 ${review.helpful} found this helpful',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: cs.onSurfaceVariant)),
-        ],
-      ),
-    );
-  }
-}
-
 class _NeutralityNote extends StatelessWidget {
   const _NeutralityNote();
 
@@ -1460,9 +1167,10 @@ class _NeutralityNote extends StatelessWidget {
           const SizedBox(width: 10),
           const Expanded(
             child: Text(
-              'The overall score is relative to this group and weighs five factors '
-              'by your preferences (equally by default). Which trade-offs matter '
-              'depends on your needs, so you decide what fits.',
+              'The overall score measures nutrients against daily reference '
+              'amounts. Factors count equally, except nutrients on your '
+              'watch-list, which count double. Which trade-offs matter depends '
+              'on your needs, so you decide what fits.',
               style: TextStyle(fontSize: 13),
             ),
           ),

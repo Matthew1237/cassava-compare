@@ -247,7 +247,7 @@ class _WatchListScreenState extends State<WatchListScreen> {
                 onSelectionChanged: (s) => _update(_w.copyWith(diet: s.first)),
               ),
             ),
-            title('Nutrients I watch', 'Shown first when you compare products.'),
+            title('Nutrients I watch', 'Prioritizes the most important ingredients for you.'),
             Wrap(
               spacing: 8,
               runSpacing: 4,

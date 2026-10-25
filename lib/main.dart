@@ -13,28 +13,20 @@
 //            to android/app/src/main/AndroidManifest.xml (needed in release builds)
 //   iOS:     add NSCameraUsageDescription to ios/Runner/Info.plist
 //
-// Reviews
-// -------
-// Open Food Facts has no reviews, and there is no free, open review source.
-// Reviews sit behind the `ReviewProvider` interface. The default provider
-// returns nothing, and the Reviews tab says so. Plug in a licensed review
-// API there if you have one.
-//
 // Design principle: the app shows facts and differences and leaves the
 // decision to the user. The one exception is the "Best overall choice" card
 // on the compare screen: a relative score (low sugar, fat and cholesterol,
 // high protein, few risk-classified ingredients) that is only meaningful
 // within the group of products being compared, with a per-factor breakdown.
-// The user can set how much each factor counts in the Preferences card on
-// the home screen.
+// Nutrients on the user's watch-list count double in that score.
 //
 // File layout
 // -----------
 //   main.dart            app shell, scanner screen, home screen
-//   models.dart          Metric, Nutrition, Review, Product, helpers
-//   services.dart        Open Food Facts lookup, ReviewProvider, ReviewAnalyzer
-//   compare_screen.dart  compare screen, best-overall score, nutrition/review widgets
-//   preferences.dart     factor weights and the Preferences card (sliders)
+//   models.dart          Metric, Nutrition, Product, helpers
+//   services.dart        Open Food Facts lookup
+//   compare_screen.dart  compare screen, best-overall score, nutrition widgets
+//   preferences.dart     factor weights (no longer used by the home screen)
 //   product_search.dart  search for a product by name
 //   product_sheet.dart   product details: price, similar products
 //   watchlist.dart       allergens / diet / nutrients the user watches
@@ -49,7 +41,6 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'compare_screen.dart';
 import 'models.dart';
-import 'preferences.dart';
 import 'product_search.dart';
 import 'product_sheet.dart';
 import 'saved.dart';
@@ -218,6 +209,9 @@ class ScannerScreen extends StatefulWidget {
 }
 
 class _ScannerScreenState extends State<ScannerScreen> {
+  // `normal` keeps reporting a barcode while it stays in view, so a retry after
+  // a failed lookup works without pulling the pack away. `_busy` and `_seen`
+  // stop repeats from adding the same product twice.
   final _controller = MobileScannerController(
     formats: const [
       BarcodeFormat.ean13,
@@ -225,7 +219,8 @@ class _ScannerScreenState extends State<ScannerScreen> {
       BarcodeFormat.upcA,
       BarcodeFormat.upcE,
     ],
-    detectionSpeed: DetectionSpeed.noDuplicates,
+    detectionSpeed: DetectionSpeed.normal,
+    detectionTimeoutMs: 400,
   );
   final _textPainter = TextPainter(textDirection: TextDirection.ltr);
   bool _busy = false;
@@ -274,7 +269,10 @@ class _ScannerScreenState extends State<ScannerScreen> {
     });
     final (msg, added) = await widget.onCode(code);
     if (!mounted) return;
-    if (added == null) _seen.remove(code); // allow a retry after an error
+    // Allow a retry after an error, but not instantly: the barcode is still in view.
+    if (added == null) {
+      Timer(const Duration(seconds: 2), () => _seen.remove(code));
+    }
     setState(() {
       _status = msg;
       if (added != null) _last = added;
@@ -325,13 +323,11 @@ class _ScannerScreenState extends State<ScannerScreen> {
         return Stack(
           fit: StackFit.expand,
           children: [
+            // The whole camera image is decoded; the frame below is only a guide.
             MobileScanner(
               controller: _controller,
               onDetect: _onDetect,
               tapToFocus: true,
-              // Read only inside the window (with some slack), so the pack
-              // next to it on the shelf isn't scanned by accident.
-              scanWindow: window.inflate(24),
               errorBuilder: (context, error) => _CameraError(error),
             ),
             CustomPaint(painter: _ViewfinderPainter(window, _found ? _readGreen : cream)),
@@ -710,14 +706,10 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   late final _off = widget.service ?? OpenFoodFactsService();
-  final ReviewProvider _reviews = NoReviewProvider();
   final List<Product> _items = [];
   bool _busy = false;
   WatchList _watch = const WatchList();
   Map<String, (double, double?)> _prices = {};
-
-  /// How much each factor counts toward the "Best overall choice" score.
-  Preferences _prefs = const Preferences();
 
   /// Last barcode Open Food Facts didn't have, offered as "add it" in a toast.
   String? _missing;
@@ -878,11 +870,6 @@ class _HomeScreenState extends State<HomeScreen> {
         p.price = price;
         if (grams != null) p.quantityGrams = grams;
       }
-      try {
-        p.reviews = await _reviews.reviewsFor(p);
-      } catch (_) {
-        // Reviews are optional; nutrition still works without them.
-      }
       if (!mounted) return ('', false);
       setState(() => _items.add(p));
       final flags = watchFlags(p, _watch).where((f) => f.level != FlagLevel.unknown);
@@ -917,8 +904,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _openCompare() {
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) =>
-          CompareScreen(products: List.of(_items), prefs: _prefs, watch: _watch),
+      builder: (_) => CompareScreen(products: List.of(_items), watch: _watch),
     ));
   }
 
@@ -1098,12 +1084,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ],
-          const SizedBox(height: 24),
-          // Weights for the "Best overall choice" score on the compare screen.
-          PreferencesCard(
-            prefs: _prefs,
-            onChanged: (p) => setState(() => _prefs = p),
-          ),
           const SizedBox(height: 24),
           Text(
             'Nutrition data from Open Food Facts. It is crowd-sourced and may be '
