@@ -11,7 +11,7 @@ const factorLabels = [
 ];
 
 /// Slider steps: 0 = ignore ... 2 = normal (default) ... 4 = most important.
-const _stepNames = ['Ignore', 'Low', 'Normal', 'High', 'Highest'];
+const _stepNames = ['Ignore', 'Low Priority', 'Normal Priority', 'High Priority', 'Highest Priority'];
 
 class Preferences {
   /// Slider level per factor label, 0..4. Missing = 2 (normal).
